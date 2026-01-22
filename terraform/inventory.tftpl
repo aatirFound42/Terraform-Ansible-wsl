@@ -1,9 +1,26 @@
-# terraform/inventory.tftpl
+# terraform/inventory.tftpl -> ansible/inventory.ini
 # Ansible Inventory for Vagrant VMs
-[deploy_nodes]
+
+[app_nodes]
 %{ for idx, ip in ip_addrs ~}
-node-${idx} ansible_host=${ip} ansible_user=vagrant ansible_ssh_private_key_file=~/ssh-keys/insecure_private_key ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+%{ if idx < length(ip_addrs) - 2 ~}
+node-${idx} ansible_host=${ip}
+%{ endif ~}
 %{ endfor ~}
 
-[deploy_nodes:vars]
+[prometheus_node]
+node-${length(ip_addrs) - 2} ansible_host=${ip_addrs[length(ip_addrs) - 2]}
+
+[grafana_node]
+node-${length(ip_addrs) - 1} ansible_host=${ip_addrs[length(ip_addrs) - 1]}
+
+[all_vms:children]
+app_nodes
+prometheus_node
+grafana_node
+
+[all_vms:vars]
+ansible_user=vagrant
+ansible_ssh_private_key_file=~/ssh-keys/insecure_private_key
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 ansible_python_interpreter=/usr/bin/python3

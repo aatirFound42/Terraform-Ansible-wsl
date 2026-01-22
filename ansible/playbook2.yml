@@ -17,7 +17,7 @@
         msg:
           - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           - "Setting up: {{ inventory_hostname }}"
-          - "IP: {{ ansible_host | default(ansible_default_ipv4.address) }}"
+          - "IP: {{ ansible_default_ipv4.address }}"
           - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     # -------------------------------------------------------
@@ -147,7 +147,7 @@
       ansible.builtin.debug:
         msg:
           - "✅ {{ inventory_hostname }} setup completed"
-          - "Node Exporter: http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ node_exporter_port }}"
+          - "Node Exporter: http://{{ ansible_default_ipv4.address }}:{{ node_exporter_port }}"
 
 # =========================================================================
 # PLAY 2: Deploy Application on App VMs
@@ -231,8 +231,8 @@
       ansible.builtin.debug:
         msg:
           - "✅ Application deployed on {{ inventory_hostname }}"
-          - "URL: http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ app_port }}"
-          - "Health: http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ app_port }}/api/health"
+          - "URL: http://{{ ansible_default_ipv4.address }}:{{ app_port }}"
+          - "Health: http://{{ ansible_default_ipv4.address }}:{{ app_port }}/api/health"
 
 # =========================================================================
 # PLAY 3: Deploy Prometheus
@@ -324,7 +324,7 @@
       ansible.builtin.debug:
         msg:
           - "✅ Prometheus deployed successfully"
-          - "URL: http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ prometheus_port }}"
+          - "URL: http://{{ ansible_default_ipv4.address }}:{{ prometheus_port }}"
 
 # =========================================================================
 # PLAY 4: Deploy Grafana
@@ -405,7 +405,7 @@
       ansible.builtin.debug:
         msg:
           - "✅ Grafana deployed successfully"
-          - "URL: http://{{ ansible_host | default(ansible_default_ipv4.address) }}:{{ grafana_port }}"
+          - "URL: http://{{ ansible_default_ipv4.address }}:{{ grafana_port }}"
           - "Default credentials: admin / admin"
 
 # =========================================================================
@@ -423,13 +423,13 @@
           - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           - ""
           - "📦 Application VMs:"
-          - "   {{ groups['app_nodes'][0] }}: http://{{ hostvars[groups['app_nodes'][0]]['ansible_host'] | default(hostvars[groups['app_nodes'][0]]['ansible_default_ipv4']['address']) }}:5000"
-          - "   {{ groups['app_nodes'][1] }}: http://{{ hostvars[groups['app_nodes'][1]]['ansible_host'] | default(hostvars[groups['app_nodes'][1]]['ansible_default_ipv4']['address']) }}:5000"
-          - "   {{ groups['app_nodes'][2] }}: http://{{ hostvars[groups['app_nodes'][2]]['ansible_host'] | default(hostvars[groups['app_nodes'][2]]['ansible_default_ipv4']['address']) }}:5000"
+          - "   App VM 1: http://{{ hostvars['app-vm-1']['ansible_default_ipv4']['address'] }}:5000"
+          - "   App VM 2: http://{{ hostvars['app-vm-2']['ansible_default_ipv4']['address'] }}:5000"
+          - "   App VM 3: http://{{ hostvars['app-vm-3']['ansible_default_ipv4']['address'] }}:5000"
           - ""
           - "📊 Monitoring Stack:"
-          - "   Prometheus: http://{{ hostvars[groups['prometheus_node'][0]]['ansible_host'] | default(hostvars[groups['prometheus_node'][0]]['ansible_default_ipv4']['address']) }}:9090"
-          - "   Grafana: http://{{ hostvars[groups['grafana_node'][0]]['ansible_host'] | default(hostvars[groups['grafana_node'][0]]['ansible_default_ipv4']['address']) }}:3000"
+          - "   Prometheus: http://{{ hostvars['prometheus-vm']['ansible_default_ipv4']['address'] }}:9090"
+          - "   Grafana: http://{{ hostvars['grafana-vm']['ansible_default_ipv4']['address'] }}:3000"
           - ""
           - "🔍 Node Exporters (all VMs): Port 9100"
           - ""
