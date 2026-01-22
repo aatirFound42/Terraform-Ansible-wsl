@@ -26,6 +26,30 @@ if [ -z "$VAGRANT_WSL_ENABLE_WINDOWS_ACCESS" ]; then
     exit 1
 fi
 
+# Function to setup SSH keys properly
+setup_ssh_keys() {
+    echo -e "${BLUE}Setting up SSH keys...${NC}"
+    
+    # Create ssh-keys directory
+    mkdir -p "$HOME/ssh-keys"
+    
+    # Copy key to WSL filesystem with proper permissions
+    if [ -f "$HOME/.vagrant.d/insecure_private_key" ]; then
+        cp "$HOME/.vagrant.d/insecure_private_key" "$HOME/ssh-keys/insecure_private_key"
+        chmod 600 "$HOME/ssh-keys/insecure_private_key"
+        echo -e "${GREEN}✓ SSH key copied to $HOME/ssh-keys/insecure_private_key${NC}"
+    else
+        echo -e "${YELLOW}⚠ Vagrant key not found yet (will be available after first VM is created)${NC}"
+    fi
+    
+    # Clear old SSH host keys
+    echo -e "${BLUE}Clearing old SSH host keys...${NC}"
+    for i in {10..20}; do
+        ssh-keygen -f "$HOME/.ssh/known_hosts" -R "192.168.56.$i" 2>/dev/null || true
+    done
+    echo -e "${GREEN}✓ Old host keys cleared${NC}"
+}
+
 # Function to display usage
 usage() {
     echo "Usage: $0 [init|plan|apply|destroy|status|ssh|clean]"
@@ -74,6 +98,9 @@ case $COMMAND in
             terraform init
         fi
 
+        # Setup SSH keys before creating VMs
+        setup_ssh_keys
+
         # Clean up any stale Vagrant locks
         echo -e "${BLUE}Cleaning up stale locks...${NC}"
         find .vagrant/machines -name "action_*" -type f -delete 2>/dev/null || true
@@ -87,6 +114,9 @@ case $COMMAND in
         echo -e "${GREEN}VMs Created Successfully!${NC}"
         echo -e "${GREEN}================================================${NC}"
         echo ""
+
+        # Setup SSH keys again (in case they were just created)
+        setup_ssh_keys
 
         # Wait for VMs to be fully ready
         echo -e "${BLUE}Waiting for VMs to be fully ready...${NC}"
@@ -105,20 +135,43 @@ case $COMMAND in
             cat "$SCRIPT_DIR/ansible/inventory.ini"
         fi
 
-        # Test connectivity
+        # Test connectivity with proper key
         echo ""
         echo -e "${BLUE}Testing SSH connectivity...${NC}"
-        VM_COUNT=$(terraform output -json 2>/dev/null | jq -r '.vm_count.value // 4')
+        VM_COUNT=$(terraform output -json 2>/dev/null | jq -r '.vm_count.value // 5')
 
+        # Use the WSL-native key location
+        SSH_KEY="$HOME/ssh-keys/insecure_private_key"
+        
+        SUCCESS_COUNT=0
         for i in $(seq 0 $((VM_COUNT - 1))); do
             IP="192.168.56.$((10 + i))"
             echo -n "Testing node-$i ($IP)... "
-            if timeout 5 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -i ~/.vagrant.d/insecure_private_key vagrant@$IP "echo 'OK'" 2>/dev/null; then
+            if timeout 5 ssh -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=5 \
+                -o LogLevel=ERROR \
+                vagrant@$IP "echo 'OK'" 2>/dev/null; then
                 echo -e "${GREEN}✓${NC}"
+                ((SUCCESS_COUNT++))
             else
                 echo -e "${YELLOW}⚠ Not ready yet${NC}"
             fi
         done
+
+        echo ""
+        if [ $SUCCESS_COUNT -eq $VM_COUNT ]; then
+            echo -e "${GREEN}✓ All $VM_COUNT nodes are accessible!${NC}"
+            echo ""
+            echo -e "${BLUE}Next steps:${NC}"
+            echo -e "  1. Test Ansible: ${YELLOW}cd ansible && ../run-ansible.sh ping${NC}"
+            echo -e "  2. Run playbook: ${YELLOW}../run-ansible.sh playbook playbook.yml${NC}"
+        else
+            echo -e "${YELLOW}⚠ $SUCCESS_COUNT/$VM_COUNT nodes accessible${NC}"
+            echo -e "Wait a moment for VMs to finish booting, then test again with:"
+            echo -e "  ${YELLOW}$0 status${NC}"
+        fi
 
         echo ""
         echo -e "${BLUE}To SSH into VMs, use:${NC}"
@@ -150,30 +203,56 @@ case $COMMAND in
 
         echo ""
         echo -e "${BLUE}VM IP Addresses:${NC}"
-        VM_COUNT=$(terraform output -json 2>/dev/null | jq -r '.vm_count.value // 4')
+        VM_COUNT=$(terraform output -json 2>/dev/null | jq -r '.vm_count.value // 5')
         for i in $(seq 0 $((VM_COUNT - 1))); do
             IP="192.168.56.$((10 + i))"
             echo "  node-$i: $IP"
+        done
+
+        # Test SSH connectivity
+        echo ""
+        echo -e "${BLUE}Testing SSH connectivity...${NC}"
+        
+        # Use the WSL-native key location
+        if [ -f "$HOME/ssh-keys/insecure_private_key" ]; then
+            SSH_KEY="$HOME/ssh-keys/insecure_private_key"
+        else
+            SSH_KEY="$HOME/.vagrant.d/insecure_private_key"
+        fi
+
+        for i in $(seq 0 $((VM_COUNT - 1))); do
+            IP="192.168.56.$((10 + i))"
+            echo -n "  node-$i ($IP): "
+            if timeout 3 ssh -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=3 \
+                -o LogLevel=ERROR \
+                vagrant@$IP "echo 'OK'" 2>/dev/null; then
+                echo -e "${GREEN}✓ Accessible${NC}"
+            else
+                echo -e "${RED}✗ Not accessible${NC}"
+            fi
         done
         ;;
 
     ssh)
         VM_NUM="${2:-0}"
         IP="192.168.56.$((10 + VM_NUM))"
-        
+
         echo -e "${BLUE}Connecting to node-$VM_NUM ($IP)...${NC}"
-        
+
         # Try WSL-native location first, fall back to Vagrant default
         if [ -f "$HOME/ssh-keys/insecure_private_key" ]; then
             SSH_KEY="$HOME/ssh-keys/insecure_private_key"
         else
             SSH_KEY="$HOME/.vagrant.d/insecure_private_key"
         fi
-        
+
         if [ ! -f "$SSH_KEY" ]; then
             echo -e "${RED}Error: Vagrant insecure private key not found${NC}"
             echo -e "${YELLOW}Trying to copy from Vagrant directory...${NC}"
-            
+
             # Copy key to WSL filesystem to avoid permission issues
             mkdir -p "$HOME/ssh-keys"
             if [ -f "$HOME/.vagrant.d/insecure_private_key" ]; then
@@ -186,13 +265,13 @@ case $COMMAND in
                 exit 1
             fi
         fi
-        
+
         # Fix key permissions if needed
         KEY_PERMS=$(stat -c %a "$SSH_KEY" 2>/dev/null || stat -f %A "$SSH_KEY" 2>/dev/null)
         if [ "$KEY_PERMS" != "600" ]; then
             echo -e "${YELLOW}Fixing SSH key permissions...${NC}"
             chmod 600 "$SSH_KEY"
-            
+
             # Verify it worked
             KEY_PERMS_AFTER=$(stat -c %a "$SSH_KEY" 2>/dev/null || stat -f %A "$SSH_KEY" 2>/dev/null)
             if [ "$KEY_PERMS_AFTER" != "600" ]; then
@@ -204,7 +283,7 @@ case $COMMAND in
                 SSH_KEY="$HOME/ssh-keys/insecure_private_key"
             fi
         fi
-        
+
         # SSH directly to the VM
         ssh -i "$SSH_KEY" \
             -o StrictHostKeyChecking=no \
@@ -231,6 +310,12 @@ case $COMMAND in
 
         # Prune Vagrant global status
         vagrant global-status --prune
+
+        # Clean SSH keys and known hosts
+        echo -e "${BLUE}Cleaning SSH keys...${NC}"
+        for i in {10..20}; do
+            ssh-keygen -f "$HOME/.ssh/known_hosts" -R "192.168.56.$i" 2>/dev/null || true
+        done
 
         echo -e "${GREEN}✓ Cleanup complete${NC}"
         ;;
