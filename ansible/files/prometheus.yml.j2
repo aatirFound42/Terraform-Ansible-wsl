@@ -15,7 +15,7 @@ scrape_configs:
     static_configs:
       - targets:
 {% for host in groups['app_nodes'] %}
-        - '{{ hostvars[host]['ansible_default_ipv4']['address'] }}:5000'
+        - '{{ hostvars[host].ansible_host }}:5000'
 {% endfor %}
 
   # Node Exporters on all VMs
@@ -23,7 +23,7 @@ scrape_configs:
     static_configs:
       - targets:
 {% for host in groups['all_vms'] %}
-        - '{{ hostvars[host]['ansible_default_ipv4']['address'] }}:9100'
+        - '{{ hostvars[host].ansible_host }}:9100'
 {% endfor %}
         labels:
           group: 'infrastructure'
