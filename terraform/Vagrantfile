@@ -2,7 +2,7 @@
 # Multi-VM configuration that works with Terraform
 
 # Read configuration from environment or use defaults
-VM_COUNT = ENV['VAGRANT_VM_COUNT'] ? ENV['VAGRANT_VM_COUNT'].to_i : 5
+VM_COUNT = ENV['VAGRANT_VM_COUNT'] ? ENV['VAGRANT_VM_COUNT'].to_i : 7
 BASE_NAME = ENV['VAGRANT_VM_NAME'] ? ENV['VAGRANT_VM_NAME'].gsub(/-\d+$/, '') : "testnode"
 CPUS = ENV['VAGRANT_CPUS'] ? ENV['VAGRANT_CPUS'].to_i : 1
 MEMORY = ENV['VAGRANT_MEMORY'] ? ENV['VAGRANT_MEMORY'].to_i : 2048

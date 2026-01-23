@@ -48,7 +48,6 @@ usage() {
     echo -e "${YELLOW}Deployment Commands:${NC}"
     echo -e "  ${GREEN}deploy${NC}            - Full deployment (all VMs)"
     echo -e "  ${GREEN}deploy-app${NC}        - Deploy application only (3 VMs)"
-    echo -e "  ${GREEN}deploy-selenium${NC}   - Deploy Selenium testing node"
     echo -e "  ${GREEN}deploy-prometheus${NC} - Deploy Prometheus only"
     echo -e "  ${GREEN}deploy-grafana${NC}    - Deploy Grafana only"
     echo -e "  ${GREEN}deploy-observability${NC} - Deploy Prometheus + Grafana"
@@ -56,28 +55,17 @@ usage() {
     echo -e "${YELLOW}Targeted Commands:${NC}"
     echo -e "  ${GREEN}ping-app${NC}          - Ping application VMs only"
     echo -e "  ${GREEN}ping-monitoring${NC}   - Ping monitoring VMs only"
-    echo -e "  ${GREEN}ping-selenium${NC}     - Ping Selenium VM"
     echo -e "  ${GREEN}logs-app${NC} [VM]     - View application logs (optionally specify VM: 0, 1, or 2)"
     echo -e "  ${GREEN}logs-prometheus${NC}   - View Prometheus logs"
     echo -e "  ${GREEN}logs-grafana${NC}      - View Grafana logs"
-    echo -e "  ${GREEN}logs-selenium${NC}     - View Selenium test logs"
-    echo -e "  ${GREEN}logs-pushgateway${NC}  - View Pushgateway logs"
     echo -e "  ${GREEN}restart-app${NC} [VM]  - Restart application (optionally specify VM: 0, 1, or 2)"
     echo -e "  ${GREEN}restart-prometheus${NC} - Restart Prometheus"
     echo -e "  ${GREEN}restart-grafana${NC}   - Restart Grafana"
-    echo -e "  ${GREEN}restart-selenium${NC}  - Restart Selenium Grid"
-    echo -e "  ${GREEN}restart-pushgateway${NC} - Restart Pushgateway"
-    echo ""
-    echo -e "${YELLOW}Selenium Commands:${NC}"
-    echo -e "  ${GREEN}selenium-test${NC}     - Run Selenium test manually"
-    echo -e "  ${GREEN}selenium-metrics${NC}  - View current Selenium metrics"
-    echo -e "  ${GREEN}selenium-status${NC}   - Check Selenium Grid status"
     echo ""
     echo -e "${YELLOW}Health Check Commands:${NC}"
     echo -e "  ${GREEN}health${NC}            - Check health of all services"
     echo -e "  ${GREEN}health-app${NC}        - Check application health on all app VMs"
     echo -e "  ${GREEN}health-monitoring${NC} - Check Prometheus and Grafana health"
-    echo -e "  ${GREEN}health-selenium${NC}   - Check Selenium and Pushgateway health"
     echo ""
     echo -e "${YELLOW}Status Commands:${NC}"
     echo -e "  ${GREEN}status${NC}            - Show status of all services"
@@ -87,8 +75,6 @@ usage() {
     echo -e "${YELLOW}Examples:${NC}"
     echo "  $0 deploy                    # Full deployment"
     echo "  $0 deploy-app                # Deploy apps only"
-    echo "  $0 deploy-selenium           # Deploy Selenium testing"
-    echo "  $0 selenium-test             # Run manual Selenium test"
     echo "  $0 logs-app 0                # View logs from node-0"
     echo "  $0 restart-app 1             # Restart app on node-1"
     echo "  $0 command 'docker ps'       # Run command on all VMs"
@@ -159,12 +145,6 @@ case $COMMAND in
         echo -e "${GREEN}✓ Monitoring VMs responding${NC}"
         ;;
 
-    ping-selenium)
-        echo -e "${BLUE}Testing connectivity to Selenium VM...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m ping
-        echo -e "${GREEN}✓ Selenium VM responding${NC}"
-        ;;
-
     facts)
         echo -e "${BLUE}Gathering facts from all nodes...${NC}"
         ansible all -i "$INVENTORY" -m setup
@@ -220,13 +200,6 @@ case $COMMAND in
         run_playbook "app_nodes"
         ;;
 
-    deploy-selenium)
-        echo -e "${CYAN}══════════════════════════════════════════${NC}"
-        echo -e "${MAGENTA}Deploying Selenium Testing Node${NC}"
-        echo -e "${CYAN}══════════════════════════════════════════${NC}"
-        run_playbook "selenium_node"
-        ;;
-
     deploy-prometheus)
         echo -e "${CYAN}══════════════════════════════════════════${NC}"
         echo -e "${MAGENTA}Deploying Prometheus${NC}"
@@ -275,16 +248,6 @@ case $COMMAND in
         ansible grafana_node -i "$INVENTORY" -m shell -a "docker logs grafana --tail 50"
         ;;
 
-    logs-selenium)
-        echo -e "${BLUE}Fetching Selenium test logs...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "tail -100 /opt/selenium_runner/run.log"
-        ;;
-
-    logs-pushgateway)
-        echo -e "${BLUE}Fetching Pushgateway logs...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "docker logs pushgateway --tail 50"
-        ;;
-
     # ========================================================================
     # Restart Commands
     # ========================================================================
@@ -316,50 +279,6 @@ case $COMMAND in
         echo -e "${GREEN}✓ Grafana restarted${NC}"
         ;;
 
-    restart-selenium)
-        echo -e "${BLUE}Restarting Selenium Grid...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "docker restart selenium-chrome"
-        echo -e "${GREEN}✓ Selenium Grid restarted${NC}"
-        ;;
-
-    restart-pushgateway)
-        echo -e "${BLUE}Restarting Pushgateway...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "docker restart pushgateway"
-        echo -e "${GREEN}✓ Pushgateway restarted${NC}"
-        ;;
-
-    # ========================================================================
-    # Selenium-Specific Commands
-    # ========================================================================
-    selenium-test)
-        echo -e "${CYAN}══════════════════════════════════════════${NC}"
-        echo -e "${MAGENTA}Running Selenium Test Manually${NC}"
-        echo -e "${CYAN}══════════════════════════════════════════${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "/opt/selenium_runner/venv/bin/python /opt/selenium_runner/check_app.py" -b --become-user=vagrant
-        echo -e "${GREEN}✓ Test completed${NC}"
-        ;;
-
-    selenium-metrics)
-        echo -e "${BLUE}Fetching Selenium metrics from Pushgateway...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "curl -s http://localhost:9091/metrics | grep selenium"
-        ;;
-
-    selenium-status)
-        echo -e "${CYAN}══════════════════════════════════════════${NC}"
-        echo -e "${MAGENTA}Selenium Grid Status${NC}"
-        echo -e "${CYAN}══════════════════════════════════════════${NC}"
-
-        echo -e "\n${YELLOW}Docker Containers:${NC}"
-	ansible selenium_node -i "$INVENTORY" -m raw -a '{% raw %}docker ps --filter "name=selenium" --filter 'name=pushgateway' --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"{% endraw %}'
-
-
-        echo -e "\n${YELLOW}Selenium Grid Status:${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "curl -s http://localhost:4444/status | python3 -m json.tool 2>/dev/null || echo 'Grid not ready'"
-
-        echo -e "\n${YELLOW}Last Test Run:${NC}"
-        ansible selenium_node -i "$INVENTORY" -m shell -a "tail -5 /opt/selenium_runner/run.log 2>/dev/null || echo 'No test logs yet'"
-        ;;
-
     # ========================================================================
     # Health Check Commands
     # ========================================================================
@@ -375,16 +294,6 @@ case $COMMAND in
                 echo -e "${GREEN}✓ node-$i is healthy${NC}" || \
                 echo -e "${RED}✗ node-$i is unhealthy${NC}"
         done
-
-        # Check Selenium
-        echo -e "\n${YELLOW}Testing Infrastructure:${NC}"
-        ansible selenium_node -i "$INVENTORY" -m uri -a "url=http://localhost:4444/status method=GET status_code=200" 2>/dev/null && \
-            echo -e "${GREEN}✓ Selenium Grid is healthy${NC}" || \
-            echo -e "${RED}✗ Selenium Grid is unhealthy${NC}"
-
-        ansible selenium_node -i "$INVENTORY" -m uri -a "url=http://localhost:9091/metrics method=GET status_code=200" 2>/dev/null && \
-            echo -e "${GREEN}✓ Pushgateway is healthy${NC}" || \
-            echo -e "${RED}✗ Pushgateway is unhealthy${NC}"
 
         # Check Prometheus
         echo -e "\n${YELLOW}Monitoring Stack:${NC}"
@@ -420,37 +329,25 @@ case $COMMAND in
             echo -e "${RED}✗ Grafana is unhealthy${NC}"
         ;;
 
-    health-selenium)
-        echo -e "${BLUE}Checking Selenium infrastructure health...${NC}"
-        ansible selenium_node -i "$INVENTORY" -m uri -a "url=http://localhost:4444/status method=GET status_code=200" 2>/dev/null && \
-            echo -e "${GREEN}✓ Selenium Grid is healthy${NC}" || \
-            echo -e "${RED}✗ Selenium Grid is unhealthy${NC}"
-
-        ansible selenium_node -i "$INVENTORY" -m uri -a "url=http://localhost:9091/metrics method=GET status_code=200" 2>/dev/null && \
-            echo -e "${GREEN}✓ Pushgateway is healthy${NC}" || \
-            echo -e "${RED}✗ Pushgateway is unhealthy${NC}"
-        ;;
-
     # ========================================================================
     # Status Commands
     # ========================================================================
-
     status)
         echo -e "${CYAN}══════════════════════════════════════════${NC}"
         echo -e "${MAGENTA}Service Status Overview${NC}"
         echo -e "${CYAN}══════════════════════════════════════════${NC}"
 
         echo -e "\n${YELLOW}Application VMs:${NC}"
-        ansible app_nodes -i "$INVENTORY" -m raw -a '{% raw %}docker ps --filter "name=python-app-instance" --format "table {{.Names}}\t{{.Status}}"{% endraw %}'
+        ansible app_nodes -i "$INVENTORY" -m shell -a "docker ps --filter 'name=python-app-instance' --format 'table {{.Names}}\t{{.Status}}'"
 
-	echo -e "\n${YELLOW}Prometheus:${NC}"
-        ansible prometheus_node -i "$INVENTORY" -m raw -a '{% raw %}docker ps --filter "name=prometheus" --format "table {{.Names}}\t{{.Status}}"{% endraw %}'
+        echo -e "\n${YELLOW}Prometheus:${NC}"
+        ansible prometheus_node -i "$INVENTORY" -m shell -a "docker ps --filter 'name=prometheus' --format 'table {{.Names}}\t{{.Status}}'"
 
         echo -e "\n${YELLOW}Grafana:${NC}"
-	ansible grafana_node -i "$INVENTORY" -m raw -a '{% raw %}docker ps --filter "name=grafana" --format "table {{.Names}}\t{{.Status}}"{% endraw %}'
+        ansible grafana_node -i "$INVENTORY" -m shell -a "docker ps --filter 'name=grafana' --format 'table {{.Names}}\t{{.Status}}'"
 
         echo -e "\n${YELLOW}Node Exporters (All VMs):${NC}"
-	ansible all_vms -i "$INVENTORY" -m raw -a '{% raw %}docker ps --filter "name=node-exporter" --format "table {{.Names}}\t{{.Status}}"{% endraw %}'
+        ansible all_vms -i "$INVENTORY" -m shell -a "docker ps --filter 'name=node-exporter' --format 'table {{.Names}}\t{{.Status}}'"
         ;;
 
     ps)
@@ -474,34 +371,24 @@ case $COMMAND in
             fi
         done
 
-        echo -e "\n${YELLOW}🧪 Testing Infrastructure:${NC}"
-        SEL_IP=$(get_private_ip "node-3")
-        if [ -n "$SEL_IP" ]; then
-            echo -e "   ${CYAN}Selenium Grid${NC} (node-3): ${GREEN}http://$SEL_IP:4444${NC}"
-            echo -e "   ${CYAN}Pushgateway${NC} (node-3):   ${GREEN}http://$SEL_IP:9091${NC}"
-            echo -e "      Metrics: http://$SEL_IP:9091/metrics"
-        else
-            echo -e "   ${CYAN}Selenium${NC} (node-3): ${RED}IP not found${NC}"
-        fi
-
         echo -e "\n${YELLOW}📊 Monitoring Stack:${NC}"
-        PROM_IP=$(get_private_ip "node-5")
-        GRAF_IP=$(get_private_ip "node-6")
+        PROM_IP=$(get_private_ip "node-3")
+        GRAF_IP=$(get_private_ip "node-4")
 
         if [ -n "$PROM_IP" ]; then
-            echo -e "   ${CYAN}Prometheus${NC} (node-5): ${GREEN}http://$PROM_IP:9090${NC}"
+            echo -e "   ${CYAN}Prometheus${NC} (node-3): ${GREEN}http://$PROM_IP:9090${NC}"
         else
-            echo -e "   ${CYAN}Prometheus${NC} (node-5): ${RED}IP not found${NC}"
+            echo -e "   ${CYAN}Prometheus${NC} (node-3): ${RED}IP not found${NC}"
         fi
 
         if [ -n "$GRAF_IP" ]; then
-            echo -e "   ${CYAN}Grafana${NC} (node-6):    ${GREEN}http://$GRAF_IP:3000${NC} (admin/admin)"
+            echo -e "   ${CYAN}Grafana${NC} (node-4):    ${GREEN}http://$GRAF_IP:3000${NC} (admin/admin)"
         else
-            echo -e "   ${CYAN}Grafana${NC} (node-6):    ${RED}IP not found${NC}"
+            echo -e "   ${CYAN}Grafana${NC} (node-4):    ${RED}IP not found${NC}"
         fi
 
         echo -e "\n${YELLOW}🔍 Node Exporters (Port 9100):${NC}"
-        for i in 0 1 2 3 5 6; do
+        for i in 0 1 2 3 4; do
             IP=$(get_private_ip "node-$i")
             if [ -n "$IP" ]; then
                 echo -e "   node-$i: ${GREEN}http://$IP:9100/metrics${NC}"

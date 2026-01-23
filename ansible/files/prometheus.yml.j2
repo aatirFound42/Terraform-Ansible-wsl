@@ -27,3 +27,10 @@ scrape_configs:
 {% endfor %}
         labels:
           group: 'infrastructure'
+
+  # Pushgateway on Selenium VM (for synthetic monitoring metrics)
+  - job_name: 'pushgateway'
+    scrape_interval: 15s
+    honor_labels: true  # CRITICAL: Preserves job labels from pushed metrics
+    static_configs:
+      - targets: ["{{ hostvars[groups['selenium_node'][0]]['ansible_host'] }}:9091"]
