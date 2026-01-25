@@ -1,0 +1,9 @@
+---
+# files/k8s/namespace.yml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    purpose: application-monitoring

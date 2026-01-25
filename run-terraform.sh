@@ -1,5 +1,6 @@
 #!/bin/bash
-# run-terraform.sh - Run Terraform with Vagrant on WSL
+# run-terraform.sh - Run Terraform with Vagrant on WSL for Kubernetes
+# Updated for 8-VM setup (2 masters + 6 workers)
 
 set -e
 
@@ -29,10 +30,10 @@ fi
 # Function to setup SSH keys properly
 setup_ssh_keys() {
     echo -e "${BLUE}Setting up SSH keys...${NC}"
-    
+
     # Create ssh-keys directory
     mkdir -p "$HOME/ssh-keys"
-    
+
     # Copy key to WSL filesystem with proper permissions
     if [ -f "$HOME/.vagrant.d/insecure_private_key" ]; then
         cp "$HOME/.vagrant.d/insecure_private_key" "$HOME/ssh-keys/insecure_private_key"
@@ -41,8 +42,8 @@ setup_ssh_keys() {
     else
         echo -e "${YELLOW}⚠ Vagrant key not found yet (will be available after first VM is created)${NC}"
     fi
-    
-    # Clear old SSH host keys
+
+    # Clear old SSH host keys for extended IP range
     echo -e "${BLUE}Clearing old SSH host keys...${NC}"
     for i in {10..20}; do
         ssh-keygen -f "$HOME/.ssh/known_hosts" -R "192.168.56.$i" 2>/dev/null || true
@@ -52,17 +53,44 @@ setup_ssh_keys() {
 
 # Function to display usage
 usage() {
-    echo "Usage: $0 [init|plan|apply|destroy|status|ssh|clean]"
+    echo "Usage: $0 [init|plan|apply|destroy|status|ssh|info|clean]"
     echo ""
     echo "Commands:"
     echo "  init     - Initialize Terraform"
     echo "  plan     - Show Terraform execution plan"
-    echo "  apply    - Create VMs with Terraform"
+    echo "  apply    - Create 8 VMs for Kubernetes cluster"
     echo "  destroy  - Destroy all VMs"
-    echo "  status   - Show Vagrant VM status"
-    echo "  ssh N    - SSH into VM number N (0-based)"
+    echo "  status   - Show VM status and connectivity"
+    echo "  ssh N    - SSH into VM number N (0-7)"
+    echo "  info     - Show cluster information and next steps"
     echo "  clean    - Clean all Terraform and Vagrant files"
     exit 1
+}
+
+# Function to display cluster info
+show_cluster_info() {
+    echo ""
+    echo -e "${GREEN}================================================${NC}"
+    echo -e "${GREEN}Kubernetes Cluster Information${NC}"
+    echo -e "${GREEN}================================================${NC}"
+    echo ""
+    echo -e "${BLUE}Master Nodes (Control Plane):${NC}"
+    echo "  node-0 (192.168.56.10) - Primary Master"
+    echo "  node-1 (192.168.56.11) - Secondary Master"
+    echo ""
+    echo -e "${BLUE}Worker Nodes:${NC}"
+    echo "  node-2 (192.168.56.12) - Worker 1"
+    echo "  node-3 (192.168.56.13) - Worker 2"
+    echo "  node-4 (192.168.56.14) - Worker 3"
+    echo "  node-5 (192.168.56.15) - Worker 4"
+    echo "  node-6 (192.168.56.16) - Worker 5"
+    echo "  node-7 (192.168.56.17) - Worker 6"
+    echo ""
+    echo -e "${BLUE}Resources:${NC}"
+    echo "  Masters: 2 vCPU, 2GB RAM each"
+    echo "  Workers: 2 vCPU, 1.5GB RAM each"
+    echo "  Total: 16 vCPU, 13.5GB RAM"
+    echo ""
 }
 
 # Check if terraform directory exists
@@ -83,13 +111,15 @@ case $COMMAND in
         ;;
 
     plan)
-        echo -e "${BLUE}Planning Terraform changes...${NC}"
+        echo -e "${BLUE}Planning Terraform changes for 8-VM Kubernetes cluster...${NC}"
         cd "$TERRAFORM_DIR"
         terraform plan
         ;;
 
     apply)
-        echo -e "${BLUE}Creating VMs with Terraform...${NC}"
+        echo -e "${BLUE}Creating 8 VMs for Kubernetes cluster...${NC}"
+        show_cluster_info
+        
         cd "$TERRAFORM_DIR"
 
         # Check if already initialized
@@ -107,6 +137,7 @@ case $COMMAND in
 
         # Apply with limited parallelism to avoid Vagrant conflicts
         echo -e "${BLUE}Creating VMs sequentially to avoid conflicts...${NC}"
+        echo -e "${YELLOW}This will take several minutes...${NC}"
         terraform apply -auto-approve -parallelism=1
 
         echo ""
@@ -138,15 +169,19 @@ case $COMMAND in
         # Test connectivity with proper key
         echo ""
         echo -e "${BLUE}Testing SSH connectivity...${NC}"
-        VM_COUNT=$(terraform output -json 2>/dev/null | jq -r '.vm_count.value // 5')
-
+        
         # Use the WSL-native key location
         SSH_KEY="$HOME/ssh-keys/insecure_private_key"
-        
+
         SUCCESS_COUNT=0
-        for i in $(seq 0 $((VM_COUNT - 1))); do
+        MASTER_COUNT=0
+        WORKER_COUNT=0
+        
+        # Test masters (nodes 0-1)
+        echo -e "${YELLOW}Master nodes:${NC}"
+        for i in 0 1; do
             IP="192.168.56.$((10 + i))"
-            echo -n "Testing node-$i ($IP)... "
+            echo -n "  node-$i ($IP) [Master]: "
             if timeout 5 ssh -i "$SSH_KEY" \
                 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null \
@@ -155,28 +190,52 @@ case $COMMAND in
                 vagrant@$IP "echo 'OK'" 2>/dev/null; then
                 echo -e "${GREEN}✓${NC}"
                 ((SUCCESS_COUNT++))
+                ((MASTER_COUNT++))
+            else
+                echo -e "${YELLOW}⚠ Not ready yet${NC}"
+            fi
+        done
+        
+        # Test workers (nodes 2-7)
+        echo -e "${YELLOW}Worker nodes:${NC}"
+        for i in 2 3 4 5 6 7; do
+            IP="192.168.56.$((10 + i))"
+            echo -n "  node-$i ($IP) [Worker]: "
+            if timeout 5 ssh -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=5 \
+                -o LogLevel=ERROR \
+                vagrant@$IP "echo 'OK'" 2>/dev/null; then
+                echo -e "${GREEN}✓${NC}"
+                ((SUCCESS_COUNT++))
+                ((WORKER_COUNT++))
             else
                 echo -e "${YELLOW}⚠ Not ready yet${NC}"
             fi
         done
 
         echo ""
-        if [ $SUCCESS_COUNT -eq $VM_COUNT ]; then
-            echo -e "${GREEN}✓ All $VM_COUNT nodes are accessible!${NC}"
+        if [ $SUCCESS_COUNT -eq 8 ]; then
+            echo -e "${GREEN}✓ All nodes accessible! ($MASTER_COUNT masters, $WORKER_COUNT workers)${NC}"
             echo ""
+            show_cluster_info
             echo -e "${BLUE}Next steps:${NC}"
-            echo -e "  1. Test Ansible: ${YELLOW}cd ansible && ../run-ansible.sh ping${NC}"
-            echo -e "  2. Run playbook: ${YELLOW}../run-ansible.sh playbook playbook.yml${NC}"
+            echo -e "  1. Test Ansible: ${YELLOW}cd ansible && ansible all -m ping${NC}"
+            echo -e "  2. Deploy K8s:   ${YELLOW}./run-ansible-k8s.sh deploy${NC}"
+            echo -e "  3. Check status: ${YELLOW}./run-terraform.sh status${NC}"
         else
-            echo -e "${YELLOW}⚠ $SUCCESS_COUNT/$VM_COUNT nodes accessible${NC}"
+            echo -e "${YELLOW}⚠ $SUCCESS_COUNT/8 nodes accessible${NC}"
+            echo -e "   Masters: $MASTER_COUNT/2, Workers: $WORKER_COUNT/6"
             echo -e "Wait a moment for VMs to finish booting, then test again with:"
             echo -e "  ${YELLOW}$0 status${NC}"
         fi
 
         echo ""
         echo -e "${BLUE}To SSH into VMs, use:${NC}"
-        echo -e "  $0 ssh 0    # Connect to node-0"
-        echo -e "  $0 ssh 1    # Connect to node-1"
+        echo -e "  $0 ssh 0    # Connect to master-1 (node-0)"
+        echo -e "  $0 ssh 1    # Connect to master-2 (node-1)"
+        echo -e "  $0 ssh 2    # Connect to worker-1 (node-2)"
         echo -e "  etc."
         ;;
 
@@ -193,26 +252,28 @@ case $COMMAND in
         ;;
 
     status)
-        echo -e "${BLUE}VM Status:${NC}"
+        echo -e "${BLUE}Kubernetes Cluster Status:${NC}"
+        echo ""
+        
         cd "$TERRAFORM_DIR"
-        vagrant global-status
+        
+        # Show Terraform outputs
+        echo -e "${BLUE}Cluster Configuration:${NC}"
+        terraform output -json 2>/dev/null | jq -r '
+            "Masters: " + (.master_ips.value | join(", ")),
+            "Workers: " + (.worker_ips.value | join(", "))
+        ' 2>/dev/null || echo "Run terraform apply first"
+        
+        echo ""
+        echo -e "${BLUE}VM Status:${NC}"
+        vagrant global-status | grep "node-" || echo "No VMs running"
 
         echo ""
-        echo -e "${BLUE}Terraform State:${NC}"
-        terraform show
-
-        echo ""
-        echo -e "${BLUE}VM IP Addresses:${NC}"
-        VM_COUNT=$(terraform output -json 2>/dev/null | jq -r '.vm_count.value // 5')
-        for i in $(seq 0 $((VM_COUNT - 1))); do
-            IP="192.168.56.$((10 + i))"
-            echo "  node-$i: $IP"
-        done
+        show_cluster_info
 
         # Test SSH connectivity
-        echo ""
         echo -e "${BLUE}Testing SSH connectivity...${NC}"
-        
+
         # Use the WSL-native key location
         if [ -f "$HOME/ssh-keys/insecure_private_key" ]; then
             SSH_KEY="$HOME/ssh-keys/insecure_private_key"
@@ -220,9 +281,14 @@ case $COMMAND in
             SSH_KEY="$HOME/.vagrant.d/insecure_private_key"
         fi
 
-        for i in $(seq 0 $((VM_COUNT - 1))); do
+        MASTER_UP=0
+        WORKER_UP=0
+        
+        echo -e "${YELLOW}Master Nodes:${NC}"
+        for i in 0 1; do
             IP="192.168.56.$((10 + i))"
-            echo -n "  node-$i ($IP): "
+            ROLE="Master-$((i + 1))"
+            echo -n "  node-$i ($IP) [$ROLE]: "
             if timeout 3 ssh -i "$SSH_KEY" \
                 -o StrictHostKeyChecking=no \
                 -o UserKnownHostsFile=/dev/null \
@@ -230,17 +296,55 @@ case $COMMAND in
                 -o LogLevel=ERROR \
                 vagrant@$IP "echo 'OK'" 2>/dev/null; then
                 echo -e "${GREEN}✓ Accessible${NC}"
+                ((MASTER_UP++))
             else
                 echo -e "${RED}✗ Not accessible${NC}"
             fi
         done
+        
+        echo -e "${YELLOW}Worker Nodes:${NC}"
+        for i in 2 3 4 5 6 7; do
+            IP="192.168.56.$((10 + i))"
+            ROLE="Worker-$((i - 1))"
+            echo -n "  node-$i ($IP) [$ROLE]: "
+            if timeout 3 ssh -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=3 \
+                -o LogLevel=ERROR \
+                vagrant@$IP "echo 'OK'" 2>/dev/null; then
+                echo -e "${GREEN}✓ Accessible${NC}"
+                ((WORKER_UP++))
+            else
+                echo -e "${RED}✗ Not accessible${NC}"
+            fi
+        done
+        
+        echo ""
+        echo -e "${BLUE}Summary:${NC}"
+        echo "  Masters: $MASTER_UP/2 accessible"
+        echo "  Workers: $WORKER_UP/6 accessible"
         ;;
 
     ssh)
         VM_NUM="${2:-0}"
+        
+        if [ "$VM_NUM" -lt 0 ] || [ "$VM_NUM" -gt 7 ]; then
+            echo -e "${RED}Error: VM number must be between 0 and 7${NC}"
+            echo "  0-1: Master nodes"
+            echo "  2-7: Worker nodes"
+            exit 1
+        fi
+        
         IP="192.168.56.$((10 + VM_NUM))"
+        
+        if [ "$VM_NUM" -le 1 ]; then
+            ROLE="Master-$((VM_NUM + 1))"
+        else
+            ROLE="Worker-$((VM_NUM - 1))"
+        fi
 
-        echo -e "${BLUE}Connecting to node-$VM_NUM ($IP)...${NC}"
+        echo -e "${BLUE}Connecting to node-$VM_NUM ($IP) [$ROLE]...${NC}"
 
         # Try WSL-native location first, fall back to Vagrant default
         if [ -f "$HOME/ssh-keys/insecure_private_key" ]; then
@@ -292,6 +396,17 @@ case $COMMAND in
             vagrant@$IP
         ;;
 
+    info)
+        show_cluster_info
+        
+        echo -e "${BLUE}Useful Commands:${NC}"
+        echo "  ./run-terraform.sh status   - Check cluster status"
+        echo "  ./run-terraform.sh ssh N    - SSH to node N (0-7)"
+        echo "  ./run-ansible-k8s.sh deploy - Deploy Kubernetes"
+        echo "  kubectl get nodes           - Check K8s nodes (after deploy)"
+        echo ""
+        ;;
+
     clean)
         echo -e "${YELLOW}Cleaning all Terraform and Vagrant files...${NC}"
 
@@ -311,7 +426,7 @@ case $COMMAND in
         # Prune Vagrant global status
         vagrant global-status --prune
 
-        # Clean SSH keys and known hosts
+        # Clean SSH keys and known hosts for extended range
         echo -e "${BLUE}Cleaning SSH keys...${NC}"
         for i in {10..20}; do
             ssh-keygen -f "$HOME/.ssh/known_hosts" -R "192.168.56.$i" 2>/dev/null || true

@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: selenium-chrome
+  namespace: monitoring
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: selenium-chrome
+  template:
+    metadata:
+      labels:
+        app: selenium-chrome
+    spec:
+      containers:
+      - name: chrome
+        image: selenium/node-chrome:4.16.1-20231219  # Use specific version
+        imagePullPolicy: IfNotPresent  # Don't pull if already present
+        env:
+        - name: SE_EVENT_BUS_HOST
+          value: "selenium-hub"
+        - name: SE_EVENT_BUS_PUBLISH_PORT
+          value: "4442"
+        - name: SE_EVENT_BUS_SUBSCRIBE_PORT
+          value: "4443"
+        - name: SE_NODE_MAX_SESSIONS
+          value: "2"
+        volumeMounts:
+        - name: dshm
+          mountPath: /dev/shm
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+      volumes:
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi

@@ -1,0 +1,2 @@
+# Place the Prometheus stack Helm values here
+# Copy content from artifact: prometheus-stack-values.yaml

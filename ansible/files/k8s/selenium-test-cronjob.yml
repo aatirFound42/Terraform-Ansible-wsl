@@ -1,0 +1,72 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: selenium-test
+  namespace: monitoring
+spec:
+  schedule: "*/2 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: selenium-test
+            image: python:3.11-slim
+            command:
+            - /bin/bash
+            - -c
+            - |
+              pip install selenium prometheus-client requests >/dev/null 2>&1
+              cat > /tmp/check_app.py << 'EOFTEST'
+              #!/usr/bin/env python3
+              import time
+              from selenium import webdriver
+              from selenium.webdriver.chrome.options import Options
+              from prometheus_client import CollectorRegistry, Gauge, push_to_gateway
+
+              SELENIUM_HUB = "http://selenium-hub:4444/wd/hub"
+              PUSHGATEWAY = "pushgateway:9091"
+              JOB_NAME = "selenium_check"
+              TARGETS = ["http://python-app:5000"]
+
+              def check_url(url):
+                  registry = CollectorRegistry()
+                  g_success = Gauge('selenium_success', '1 if check passed', registry=registry)
+                  g_latency = Gauge('selenium_latency_seconds', 'Page load time', registry=registry)
+
+                  start_time = time.time()
+                  success = 0
+
+                  options = Options()
+                  options.add_argument('--headless')
+                  options.add_argument('--no-sandbox')
+                  options.add_argument('--disable-dev-shm-usage')
+
+                  driver = None
+                  try:
+                      driver = webdriver.Remote(command_executor=SELENIUM_HUB, options=options)
+                      driver.get(url)
+                      success = 1 if driver.page_source else 0
+                  except Exception as e:
+                      print(f"Failed {url}: {e}")
+                  finally:
+                      duration = time.time() - start_time
+                      g_success.set(success)
+                      g_latency.set(duration)
+
+                      if driver:
+                          driver.quit()
+
+                      push_to_gateway(
+                          PUSHGATEWAY,
+                          job=JOB_NAME,
+                          registry=registry,
+                          grouping_key={'instance': url}
+                      )
+
+              for target in TARGETS:
+                  check_url(target)
+              EOFTEST
+
+              python /tmp/check_app.py
+          restartPolicy: OnFailure

@@ -1,0 +1,64 @@
+.
+├── Makefile
+├── README.md
+├── ansible
+│   ├── ansible.cfg
+│   ├── group_vars
+│   ├── inventory
+│   │   └── hosts.ini
+│   ├── playbooks
+│   │   └── pre-migration-prep.yml
+│   └── roles
+├── config
+│   ├── development
+│   ├── production
+│   │   └── env.yaml
+│   └── staging
+├── docs
+│   ├── README.md
+│   ├── architecture
+│   │   └── network-topology.md
+│   ├── runbooks
+│   │   ├── backup-restore.md
+│   │   ├── scaling.md
+│   │   └── upgrades.md
+│   └── troubleshooting
+│       └── common-issues.md
+├── helm-values
+│   ├── ingress-nginx
+│   │   └── values.yaml -> ../../k8s-manifests/networking/ingress-nginx/values.yaml
+│   ├── longhorn
+│   │   └── values.yaml -> ../../k8s-manifests/storage/longhorn/values.yaml
+│   └── prometheus-stack
+│       └── values.yaml -> ../../k8s-manifests/monitoring/prometheus-stack/values.yaml
+├── k8s-manifests
+│   ├── applications
+│   │   └── flask-api
+│   ├── monitoring
+│   │   ├── ingress
+│   │   └── prometheus-stack
+│   ├── networking
+│   │   ├── ingress-nginx
+│   │   └── metallb
+│   ├── storage
+│   │   └── longhorn
+│   └── testing
+│       └── selenium
+├── kubespray-config
+│   ├── README.md
+│   ├── group_vars
+│   │   └── k8s_cluster
+│   └── inventory
+│       └── hosts.yaml
+├── project-structure.txt
+└── scripts
+    ├── backup
+    │   └── backup-etcd.sh
+    ├── deployment
+    │   └── deploy-all.sh
+    ├── migration
+    │   └── export-grafana-dashboards.sh
+    └── validation
+        └── validate-cluster.sh
+
+40 directories, 22 files

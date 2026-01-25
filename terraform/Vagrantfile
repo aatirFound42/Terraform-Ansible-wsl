@@ -1,8 +1,7 @@
 # terraform/Vagrantfile
 # Multi-VM configuration that works with Terraform
-
 # Read configuration from environment or use defaults
-VM_COUNT = ENV['VAGRANT_VM_COUNT'] ? ENV['VAGRANT_VM_COUNT'].to_i : 7
+VM_COUNT = ENV['VAGRANT_VM_COUNT'] ? ENV['VAGRANT_VM_COUNT'].to_i : 8
 BASE_NAME = ENV['VAGRANT_VM_NAME'] ? ENV['VAGRANT_VM_NAME'].gsub(/-\d+$/, '') : "testnode"
 CPUS = ENV['VAGRANT_CPUS'] ? ENV['VAGRANT_CPUS'].to_i : 1
 MEMORY = ENV['VAGRANT_MEMORY'] ? ENV['VAGRANT_MEMORY'].to_i : 2048
@@ -24,18 +23,26 @@ Vagrant.configure("2") do |config|
       
       node.vm.provider "virtualbox" do |vb|
         vb.name = "#{BASE_NAME}-#{i}"
-        vb.cpus = CPUS
-        vb.memory = MEMORY
+        # First 2 VMs (masters) get 2 CPUs, rest get 1 CPU
+        # This logic is in Vagrantfile so it applies per-VM correctly
+        vb.cpus = i < 2 ? 2 : CPUS
+        vb.memory = i < 2 ? 4096 : MEMORY
         vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
         vb.customize ["modifyvm", :id, "--natdnsproxy1", "on"]
       end
       
       # Ensure VM is ready
       node.vm.provision "shell", inline: <<-SHELL
-        echo "VM #{BASE_NAME}-#{i} is ready"
+        echo "========================================="
+        echo "VM: #{BASE_NAME}-#{i}"
+        echo "Hostname: $(hostname)"
+        echo "CPU cores: $(nproc)"
+        echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
         echo "IP Address:"
-        ip addr show enp0s8 | grep 'inet ' || echo "Network interface not ready"
+        ip addr show enp0s8 | grep 'inet ' | awk '{print $2}' || echo "Network interface not ready"
+        echo "========================================="
       SHELL
     end
   end
 end
+

@@ -1,0 +1,2 @@
+# Place the MetalLB IP pool configuration here
+# Copy content from artifact: metallb-config (IPAddressPool section)

@@ -3,7 +3,7 @@
 variable "vm_count" {
   description = "Number of VM nodes to create"
   type        = number
-  default     = 5
+  default     = 8
 }
 
 variable "vm_name" {

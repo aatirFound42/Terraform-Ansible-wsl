@@ -1,0 +1,46 @@
+# Kubernetes
+*.kubeconfig
+kubeconfig
+admin.conf
+
+# Ansible
+*.retry
+.ansible/
+ansible/inventory/hosts.ini
+
+# Secrets
+*secret*.yaml
+*secret*.yml
+credentials*.yaml
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Logs
+*.log
+
+# Temporary files
+tmp/
+temp/
+.DS_Store
+
+# Backups
+backups/
+*.backup
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Kubespray (if cloned inside)
+kubespray/

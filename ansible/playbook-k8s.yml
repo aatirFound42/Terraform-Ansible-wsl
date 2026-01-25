@@ -1,0 +1,657 @@
+---
+# ansible/playbook-k8s.yml - Kubernetes HA Multi-Master Deployment
+# =========================================================================
+# PLAY 0: Configure Load Balancer for Control Plane HA
+# =========================================================================
+- name: Configure HAProxy Load Balancer
+  hosts: k8s_loadbalancer
+  become: true
+
+  tasks:
+    - name: Display load balancer setup info
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Configuring Load Balancer: {{ inventory_hostname }}"
+          - "IP: {{ ansible_host }}"
+          - "Backends: {{ lb_backend_servers }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install HAProxy
+      ansible.builtin.apt:
+        name:
+          - haproxy
+          - socat
+        state: present
+
+    - name: Configure HAProxy for Kubernetes API
+      ansible.builtin.copy:
+        dest: /etc/haproxy/haproxy.cfg
+        content: |
+          global
+              log /dev/log local0
+              log /dev/log local1 notice
+              chroot /var/lib/haproxy
+              stats socket /run/haproxy/admin.sock mode 660 level admin
+              stats timeout 30s
+              user haproxy
+              group haproxy
+              daemon
+
+          defaults
+              log     global
+              mode    tcp
+              option  tcplog
+              option  dontlognull
+              timeout connect 5000
+              timeout client  50000
+              timeout server  50000
+
+          frontend k8s-api
+              bind *:6443
+              mode tcp
+              option tcplog
+              default_backend k8s-masters
+
+          backend k8s-masters
+              mode tcp
+              balance roundrobin
+              option tcp-check
+              {% for backend in lb_backend_servers.split(',') %}
+              server master{{ loop.index }} {{ backend }} check fall 3 rise 2
+              {% endfor %}
+
+          listen stats
+              bind *:{{ lb_stats_port }}
+              mode http
+              stats enable
+              stats uri /
+              stats realm HAProxy\ Statistics
+              stats auth {{ lb_stats_user }}:{{ lb_stats_password }}
+        mode: '0644'
+
+    - name: Enable and restart HAProxy
+      ansible.builtin.systemd:
+        name: haproxy
+        state: restarted
+        enabled: yes
+
+    - name: Verify HAProxy is listening on port 6443
+      ansible.builtin.wait_for:
+        port: 6443
+        timeout: 30
+
+    - name: Load balancer configuration completed
+      ansible.builtin.debug:
+        msg:
+          - "✅ Load Balancer configured successfully"
+          - "Stats available at: http://{{ ansible_host }}:{{ lb_stats_port }}"
+
+# =========================================================================
+# PLAY 1: Prepare All Nodes (System & Container Runtime)
+# =========================================================================
+- name: Prepare All Kubernetes Nodes
+  hosts: k8s_cluster
+  become: true
+  vars:
+    containerd_version: "1.7.13"
+
+  tasks:
+    - name: Display node preparation info
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "Preparing: {{ inventory_hostname }}"
+          - "Role: {{ kubernetes_role }}"
+          - "IP: {{ ansible_host }}"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # -------------------------------------------------------
+    # System Preparation
+    # -------------------------------------------------------
+    - name: Disable swap
+      ansible.builtin.shell: |
+        swapoff -a
+        sed -i '/ swap / s/^/#/' /etc/fstab
+
+    - name: Load kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+        mode: '0644'
+
+    - name: Enable kernel modules
+      ansible.builtin.shell: |
+        modprobe overlay
+        modprobe br_netfilter
+
+    - name: Configure sysctl for Kubernetes
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+        mode: '0644'
+
+    - name: Apply sysctl settings
+      ansible.builtin.command: sysctl --system
+
+    - name: Update APT cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install base dependencies
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - software-properties-common
+          - python3-pip
+          - git
+        state: present
+
+    # -------------------------------------------------------
+    # Install Containerd
+    # -------------------------------------------------------
+    - name: Download containerd
+      ansible.builtin.get_url:
+        url: "https://github.com/containerd/containerd/releases/download/v{{ containerd_version }}/containerd-{{ containerd_version }}-linux-amd64.tar.gz"
+        dest: /tmp/containerd.tar.gz
+        mode: '0644'
+
+    - name: Extract containerd
+      ansible.builtin.unarchive:
+        src: /tmp/containerd.tar.gz
+        dest: /usr/local
+        remote_src: yes
+
+    - name: Create containerd service file
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+        dest: /etc/systemd/system/containerd.service
+        mode: '0644'
+
+    - name: Create containerd config directory
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        mode: '0755'
+
+    - name: Generate default containerd config
+      ansible.builtin.shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Configure containerd to use systemd cgroup driver
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Enable CRI plugin in containerd (disable disabled_plugins)
+      ansible.builtin.lineinfile:
+        path: /etc/containerd/config.toml
+        regexp: '^disabled_plugins\s*=.*'
+        line: 'disabled_plugins = []'
+        state: present
+
+    - name: Ensure containerd uses correct sandbox image
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'sandbox_image = ".*"'
+        replace: 'sandbox_image = "registry.k8s.io/pause:3.9"'
+
+    - name: Enable and start containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: yes
+        daemon_reload: yes
+
+    - name: Configure crictl to use containerd
+      ansible.builtin.copy:
+        dest: /etc/crictl.yaml
+        content: |
+          runtime-endpoint: unix:///run/containerd/containerd.sock
+          image-endpoint: unix:///run/containerd/containerd.sock
+          timeout: 10
+        mode: '0644'
+
+    - name: Wait for containerd to be ready
+      ansible.builtin.wait_for:
+        timeout: 10
+
+    - name: Verify containerd is running
+      ansible.builtin.command: ctr version
+      register: containerd_version_check
+      failed_when: containerd_version_check.rc != 0
+
+    - name: Check containerd can pull images
+      ansible.builtin.command: crictl pull registry.k8s.io/pause:3.9
+      register: image_pull_test
+      failed_when: false
+      changed_when: false
+      ignore_errors: yes
+
+    # -------------------------------------------------------
+    # Install runc
+    # -------------------------------------------------------
+    - name: Download runc
+      ansible.builtin.get_url:
+        url: https://github.com/opencontainers/runc/releases/download/v1.1.12/runc.amd64
+        dest: /usr/local/sbin/runc
+        mode: '0755'
+
+    # -------------------------------------------------------
+    # Install CNI plugins
+    # -------------------------------------------------------
+    - name: Create CNI directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /opt/cni/bin
+        - /etc/cni/net.d
+
+    - name: Download CNI plugins
+      ansible.builtin.get_url:
+        url: https://github.com/containernetworking/plugins/releases/download/v1.4.0/cni-plugins-linux-amd64-v1.4.0.tgz
+        dest: /tmp/cni-plugins.tgz
+        mode: '0644'
+
+    - name: Extract CNI plugins
+      ansible.builtin.unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        remote_src: yes
+
+    - name: Install loopback CNI config (required for kubelet)
+      ansible.builtin.copy:
+        dest: /etc/cni/net.d/99-loopback.conf
+        content: |
+          {
+            "cniVersion": "0.4.0",
+            "type": "loopback"
+          }
+        mode: '0644'
+
+    # -------------------------------------------------------
+    # Install Kubernetes Components
+    # -------------------------------------------------------
+    - name: Create keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Add Kubernetes GPG key
+      ansible.builtin.get_url:
+        url: https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key
+        dest: /tmp/kubernetes-apt-keyring.key
+        mode: '0644'
+
+    - name: Add Kubernetes GPG key to keyring
+      ansible.builtin.shell: |
+        cat /tmp/kubernetes-apt-keyring.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: yes
+
+    - name: Install Kubernetes components
+      ansible.builtin.apt:
+        name:
+          - kubelet=1.28.*
+          - kubeadm=1.28.*
+          - kubectl=1.28.*
+          - cri-tools
+        state: present
+        allow_downgrade: yes
+
+    - name: Hold Kubernetes packages
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Create kubelet service drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/kubelet.service.d
+        state: directory
+        mode: '0755'
+
+    - name: Enable kubelet but do not start it yet
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: yes
+        state: stopped
+        daemon_reload: yes
+
+    - name: Node preparation completed
+      ansible.builtin.debug:
+        msg: "✅ {{ inventory_hostname }} prepared for Kubernetes"
+
+
+# =========================================================================
+# PLAY 2: Initialize Primary Master
+# =========================================================================
+- name: Initialize Primary Kubernetes Master
+  hosts: k8s_primary_master
+  become: true
+
+  tasks:
+    - name: Verify load balancer endpoint is reachable
+      ansible.builtin.wait_for:
+        host: "{{ control_plane_endpoint.split(':')[0] }}"
+        port: "{{ control_plane_endpoint.split(':')[1] }}"
+        timeout: 30
+      delegate_to: localhost
+      become: no
+
+    - name: Check if cluster is already initialized
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_initialized
+
+    - name: Pre-pull Kubernetes control plane images
+      ansible.builtin.shell: kubeadm config images pull
+      when: not k8s_initialized.stat.exists
+      register: image_pull
+      retries: 3
+      delay: 10
+
+    - name: Ensure kubelet is stopped before kubeadm init
+      ansible.builtin.systemd:
+        name: kubelet
+        state: stopped
+
+    - name: Initialize Kubernetes cluster
+      ansible.builtin.shell: |
+        kubeadm init \
+          --control-plane-endpoint="{{ control_plane_endpoint }}" \
+          --upload-certs \
+          --pod-network-cidr={{ k8s_pod_network_cidr }} \
+          --service-cidr={{ k8s_service_cidr }} \
+          --apiserver-advertise-address={{ ansible_host }} \
+          --ignore-preflight-errors=NumCPU \
+          --v=5
+      when: not k8s_initialized.stat.exists
+      register: kubeadm_init
+
+    - name: Create .kube directory for root
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy admin.conf to root's kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        mode: '0600'
+
+    - name: Create .kube directory for vagrant user
+      ansible.builtin.file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Copy admin.conf to vagrant's kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/vagrant/.kube/config
+        remote_src: yes
+        owner: vagrant
+        group: vagrant
+        mode: '0600'
+
+    - name: Install Calico CNI
+      ansible.builtin.shell: |
+        kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: k8s_cni == "calico"
+
+    - name: Wait for Calico pods to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=300s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+      register: calico_wait
+      until: calico_wait.rc == 0
+
+    - name: Get join command for workers
+      ansible.builtin.shell: kubeadm token create --print-join-command
+      register: worker_join_command
+
+    - name: Get certificate key for masters
+      ansible.builtin.shell: kubeadm init phase upload-certs --upload-certs 2>/dev/null | tail -1
+      register: certificate_key
+
+    - name: Save join commands
+      ansible.builtin.set_fact:
+        worker_join_cmd: "{{ worker_join_command.stdout }}"
+        master_join_cmd: "{{ worker_join_command.stdout }} --control-plane --certificate-key {{ certificate_key.stdout }}"
+      delegate_to: localhost
+      delegate_facts: yes
+
+    - name: Primary master initialization completed
+      ansible.builtin.debug:
+        msg: "✅ Primary master initialized successfully"
+
+
+# =========================================================================
+# PLAY 3: Join Secondary Masters
+# =========================================================================
+- name: Join Secondary Masters to Cluster
+  hosts: k8s_secondary_masters
+  become: true
+
+  tasks:
+    - name: Check if secondary masters group is empty
+      ansible.builtin.debug:
+        msg: "No secondary masters to join"
+      when: groups['k8s_secondary_masters'] | length == 0
+
+    - name: End play if no secondary masters
+      ansible.builtin.meta: end_play
+      when: groups['k8s_secondary_masters'] | length == 0
+
+    - name: Check if node is already part of cluster
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Join secondary master to cluster
+      ansible.builtin.shell: "{{ hostvars['localhost']['master_join_cmd'] }} --ignore-preflight-errors=NumCPU"
+      when: not kubelet_conf.stat.exists
+
+    - name: Create .kube directory for root
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0755'
+
+    - name: Copy admin.conf to root's kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+        mode: '0600'
+
+    - name: Create .kube directory for vagrant user
+      ansible.builtin.file:
+        path: /home/vagrant/.kube
+        state: directory
+        owner: vagrant
+        group: vagrant
+        mode: '0755'
+
+    - name: Copy admin.conf to vagrant's kubeconfig
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/vagrant/.kube/config
+        remote_src: yes
+        owner: vagrant
+        group: vagrant
+        mode: '0600'
+
+    - name: Secondary masters joined
+      ansible.builtin.debug:
+        msg: "✅ {{ inventory_hostname }} joined as secondary master"
+
+
+# =========================================================================
+# PLAY 4: Join Worker Nodes
+# =========================================================================
+- name: Join Worker Nodes to Cluster
+  hosts: k8s_workers
+  become: true
+
+  tasks:
+    - name: Check if node is already part of cluster
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Join worker to cluster
+      ansible.builtin.shell: "{{ hostvars['localhost']['worker_join_cmd'] }} --ignore-preflight-errors=NumCPU"
+      when: not kubelet_conf.stat.exists
+
+    - name: Worker nodes joined
+      ansible.builtin.debug:
+        msg: "✅ {{ inventory_hostname }} joined as worker"
+
+
+# =========================================================================
+# PLAY 5: Deploy Applications and Services
+# =========================================================================
+- name: Deploy Applications to Kubernetes
+  hosts: k8s_primary_master
+  become: true
+
+  tasks:
+    - name: Verify manifest files exist locally
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      delegate_to: localhost
+      become: no
+      loop:
+        - files/k8s/namespace.yml
+        - files/k8s/python-app-deployment.yml
+        - files/k8s/prometheus-deployment.yml
+        - files/k8s/grafana-deployment.yml
+        - files/k8s/selenium-hub-deployment.yml
+        - files/k8s/selenium-chrome-deployment.yml
+        - files/k8s/pushgateway-deployment.yml
+        - files/k8s/node-exporter-daemonset.yml
+      register: manifest_check
+
+    - name: Fail if any manifest files are missing
+      ansible.builtin.fail:
+        msg: "Missing manifest file: {{ item.item }}"
+      loop: "{{ manifest_check.results }}"
+      when: not item.stat.exists
+
+    - name: Create manifests directory
+      ansible.builtin.file:
+        path: /opt/k8s-manifests
+        state: directory
+        mode: '0755'
+
+    - name: Copy Kubernetes manifests
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/k8s-manifests/
+        mode: '0644'
+      loop:
+        - files/k8s/namespace.yml
+        - files/k8s/python-app-deployment.yml
+        - files/k8s/prometheus-deployment.yml
+        - files/k8s/grafana-deployment.yml
+        - files/k8s/selenium-hub-deployment.yml
+        - files/k8s/selenium-chrome-deployment.yml
+        - files/k8s/pushgateway-deployment.yml
+        - files/k8s/node-exporter-daemonset.yml
+
+    - name: Apply namespace
+      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/namespace.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Apply application manifests
+      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for deployments to be ready
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=available --timeout=300s \
+          deployment/python-app \
+          deployment/prometheus \
+          deployment/grafana \
+          deployment/selenium-hub \
+          deployment/pushgateway \
+          -n monitoring
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+      register: deployment_wait
+      until: deployment_wait.rc == 0
+
+    - name: Get service information
+      ansible.builtin.shell: kubectl get svc -n monitoring -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: services_info
+
+    - name: Display service information
+      ansible.builtin.debug:
+        msg: "{{ services_info.stdout_lines }}"
+
+    - name: Deployment completed
+      ansible.builtin.debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "🎉 KUBERNETES HA CLUSTER DEPLOYMENT COMPLETED"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - ""
+          - "Load Balancer: {{ control_plane_endpoint }}"
+          - "Master Nodes: {{ groups['k8s_masters'] | length }}"
+          - "Worker Nodes: {{ groups['k8s_workers'] | length }}"
+          - "Pod Network: {{ k8s_pod_network_cidr }}"
+          - ""
+          - "Access kubectl from any master node:"
+          - "  kubectl get nodes"
+          - "  kubectl get pods -n monitoring"
+          - ""
+          - "HAProxy Stats: http://{{ groups['k8s_loadbalancer'][0] }}:8404"
+          - "  User: admin / Pass: admin123"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
