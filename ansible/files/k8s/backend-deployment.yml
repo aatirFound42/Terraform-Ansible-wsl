@@ -1,0 +1,83 @@
+---
+# files/k8s/backend-deployment.yml
+# Backend Flask API Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cicd-backend
+  namespace: monitoring
+  labels:
+    app: cicd-backend
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cicd-backend
+  template:
+    metadata:
+      labels:
+        app: cicd-backend
+        tier: backend
+      # ADDED: Prometheus auto-discovery annotations
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: backend
+        image: ghcr.io/aatirfound42/python-cicd-4localservers-withtools/backend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 5000
+          name: http
+          protocol: TCP
+        env:
+        - name: FLASK_ENV
+          value: "production"
+        - name: FLASK_APP
+          value: "app/main.py"
+        - name: CORS_ORIGINS
+          value: "*"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cicd-backend
+  namespace: monitoring
+  labels:
+    app: cicd-backend
+spec:
+  type: NodePort
+  selector:
+    app: cicd-backend
+  ports:
+  - name: http
+    port: 5000
+    targetPort: 5000
+    nodePort: 30500
+    protocol: TCP

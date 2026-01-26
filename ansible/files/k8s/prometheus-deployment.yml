@@ -60,11 +60,19 @@ data:
         static_configs:
           - targets: ['localhost:9090']
 
-      # Python Flask App
-      - job_name: 'python-app'
+      # Backend Flask API (UPDATED from python-app)
+      - job_name: 'cicd-backend'
         static_configs:
-          - targets: ['python-app:5000']
+          - targets: ['cicd-backend:5000']
         metrics_path: '/metrics'
+
+      # Frontend Nginx (if it exposes metrics)
+      # Comment out if your frontend doesn't have a /metrics endpoint
+      #- job_name: 'cicd-frontend'
+       # static_configs:
+        #  - targets: ['cicd-frontend:80']
+        #metrics_path: '/metrics'
+        # This will fail if frontend doesn't expose metrics - that's OK
 
       # Node Exporter - System metrics from all nodes
       - job_name: 'node-exporter'
@@ -105,7 +113,7 @@ data:
             action: keep
             regex: default;kubernetes;https
 
-      # Kubernetes Pods - All pods in monitoring namespace
+      # Kubernetes Pods - Auto-discover pods with prometheus.io/scrape annotation
       - job_name: 'kubernetes-pods'
         kubernetes_sd_configs:
           - role: pod

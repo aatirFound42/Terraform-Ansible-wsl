@@ -1,11 +1,11 @@
 #!/bin/bash
-# run-ansible-k8s.sh - Kubernetes HA Multi-Master Deployment Tool (FIXED)
-# 
-# FIXES APPLIED:
-# - Improved error handling in run_kubectl()
-# - Robust get_lb_ip() with multiple fallbacks
-# - Better error messages and validation
-# - Added safety checks for missing commands
+# run-ansible-k8s.sh - Kubernetes HA Multi-Master Deployment Tool (ENHANCED)
+#
+# NEW FEATURES:
+# - Deploy frontend/backend independently
+# - Scale frontend/backend
+# - View frontend/backend logs
+# - Restart frontend/backend
 #
 set -e
 
@@ -66,6 +66,20 @@ usage() {
     echo -e "  ${GREEN}deploy-workers${NC}    - Join worker nodes"
     echo -e "  ${GREEN}deploy-apps${NC}       - Deploy applications only"
     echo ""
+    echo -e "${YELLOW}🆕 Frontend/Backend Management:${NC}"
+    echo -e "  ${GREEN}deploy-frontend${NC}   - Deploy/update frontend only"
+    echo -e "  ${GREEN}deploy-backend${NC}    - Deploy/update backend only"
+    echo -e "  ${GREEN}deploy-fullstack${NC}  - Deploy/update both frontend & backend"
+    echo -e "  ${GREEN}scale-frontend${NC} N  - Scale frontend to N replicas"
+    echo -e "  ${GREEN}scale-backend${NC} N   - Scale backend to N replicas"
+    echo -e "  ${GREEN}restart-frontend${NC}  - Restart frontend deployment"
+    echo -e "  ${GREEN}restart-backend${NC}   - Restart backend deployment"
+    echo -e "  ${GREEN}logs-frontend${NC}     - View frontend logs"
+    echo -e "  ${GREEN}logs-backend${NC}      - View backend logs"
+    echo -e "  ${GREEN}status-fullstack${NC}  - Show frontend & backend status"
+    echo -e "  ${GREEN}delete-frontend${NC}   - Delete frontend deployment"
+    echo -e "  ${GREEN}delete-backend${NC}    - Delete backend deployment"
+    echo ""
     echo -e "${YELLOW}Load Balancer:${NC}"
     echo -e "  ${GREEN}lb-status${NC}         - Check HAProxy status"
     echo -e "  ${GREEN}lb-stats${NC}          - Show HAProxy statistics URL"
@@ -112,13 +126,10 @@ usage() {
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  $0 deploy                    # Full deployment (all phases)"
-    echo "  $0 phase1                    # Deploy LB + primary master"
-    echo "  $0 phase2                    # Join secondary masters"
-    echo "  $0 phase3                    # Join workers"
-    echo "  $0 phase4                    # Deploy applications"
-    echo "  $0 lb-status                 # Check load balancer"
-    echo "  $0 nodes                     # Show cluster nodes"
-    echo "  $0 scale-app 5               # Scale app to 5 replicas"
+    echo "  $0 deploy-fullstack          # Deploy only frontend & backend"
+    echo "  $0 scale-frontend 3          # Scale frontend to 3 replicas"
+    echo "  $0 logs-backend              # View backend logs"
+    echo "  $0 status-fullstack          # Check frontend & backend status"
     echo ""
     echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
     exit 1
@@ -128,20 +139,20 @@ usage() {
 run_kubectl() {
     local output
     local exit_code
-    
+
     # Capture output and exit code
     output=$(ansible k8s_primary_master -i "$INVENTORY" -m shell \
         -a "kubectl $*" \
         -e "ansible_become=yes" 2>&1)
     exit_code=$?
-    
+
     # Check for errors
     if [ $exit_code -ne 0 ]; then
         echo -e "${RED}Error executing kubectl command${NC}" >&2
         echo "$output" | grep -v "CHANGED" | grep -v "rc=0" >&2
         return 1
     fi
-    
+
     # Filter and display output
     echo "$output" | grep -v "CHANGED" | grep -v "rc=0" | grep -v "^$" || true
     return 0
@@ -158,7 +169,7 @@ get_private_ip() {
 # Get load balancer IP (IMPROVED WITH MULTIPLE FALLBACKS)
 get_lb_ip() {
     local ip=""
-    
+
     # Method 1: Try to get from running node first
     ip=$(ansible k8s_loadbalancer -i "$INVENTORY" -m shell \
         -a "hostname -I | tr ' ' '\n' | grep -E '^192\.168\.56\.' | head -1" 2>/dev/null \
@@ -169,7 +180,7 @@ get_lb_ip() {
         ip=$(ansible-inventory -i "$INVENTORY" --host lb-0 2>/dev/null | \
              grep -oP '"ansible_host":\s*"\K[^"]+' || true)
     fi
-    
+
     # Method 3: Parse inventory file directly (more robust)
     if [ -z "$ip" ]; then
         ip=$(awk '
@@ -182,7 +193,7 @@ get_lb_ip() {
             }
         ' "$INVENTORY")
     fi
-    
+
     # Method 4: Last resort - grep with robust pattern
     if [ -z "$ip" ]; then
         ip=$(grep -A2 "^\[k8s_loadbalancer\]" "$INVENTORY" | \
@@ -225,6 +236,170 @@ case $COMMAND in
         ;;
 
     # ========================================================================
+    # Frontend/Backend Management (NEW)
+    # ========================================================================
+    deploy-frontend)
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        echo -e "${MAGENTA}Deploying Frontend${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        
+        # Copy manifest to primary master
+        ansible k8s_primary_master -i "$INVENTORY" -m copy \
+            -a "src=$ANSIBLE_DIR/files/k8s/frontend-deployment.yml dest=/tmp/frontend-deployment.yml" -b
+        
+        # Apply manifest
+        run_kubectl "apply -f /tmp/frontend-deployment.yml"
+        
+        echo -e "${GREEN}✓ Frontend deployment updated${NC}"
+        echo -e "${YELLOW}Waiting for rollout...${NC}"
+        run_kubectl "rollout status deployment/cicd-frontend -n monitoring --timeout=120s" || true
+        
+        echo ""
+        echo -e "${GREEN}✓ Frontend deployed successfully${NC}"
+        echo -e "${YELLOW}Access at:${NC} http://$(get_private_ip 'node-0'):30300"
+        ;;
+
+    deploy-backend)
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        echo -e "${MAGENTA}Deploying Backend${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        
+        # Copy manifest to primary master
+        ansible k8s_primary_master -i "$INVENTORY" -m copy \
+            -a "src=$ANSIBLE_DIR/files/k8s/backend-deployment.yml dest=/tmp/backend-deployment.yml" -b
+        
+        # Apply manifest
+        run_kubectl "apply -f /tmp/backend-deployment.yml"
+        
+        echo -e "${GREEN}✓ Backend deployment updated${NC}"
+        echo -e "${YELLOW}Waiting for rollout...${NC}"
+        run_kubectl "rollout status deployment/cicd-backend -n monitoring --timeout=120s" || true
+        
+        echo ""
+        echo -e "${GREEN}✓ Backend deployed successfully${NC}"
+        echo -e "${YELLOW}Access at:${NC} http://$(get_private_ip 'node-0'):30500"
+        ;;
+
+    deploy-fullstack)
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        echo -e "${MAGENTA}Deploying Full Stack (Frontend + Backend)${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        
+        echo -e "${YELLOW}Deploying Backend...${NC}"
+        ansible k8s_primary_master -i "$INVENTORY" -m copy \
+            -a "src=$ANSIBLE_DIR/files/k8s/backend-deployment.yml dest=/tmp/backend-deployment.yml" -b
+        run_kubectl "apply -f /tmp/backend-deployment.yml"
+        
+        echo -e "${YELLOW}Deploying Frontend...${NC}"
+        ansible k8s_primary_master -i "$INVENTORY" -m copy \
+            -a "src=$ANSIBLE_DIR/files/k8s/frontend-deployment.yml dest=/tmp/frontend-deployment.yml" -b
+        run_kubectl "apply -f /tmp/frontend-deployment.yml"
+        
+        echo -e "${YELLOW}Waiting for rollouts...${NC}"
+        run_kubectl "rollout status deployment/cicd-backend -n monitoring --timeout=120s" || true
+        run_kubectl "rollout status deployment/cicd-frontend -n monitoring --timeout=120s" || true
+        
+        echo ""
+        echo -e "${GREEN}✓ Full stack deployed successfully${NC}"
+        MASTER_IP=$(get_private_ip 'node-0')
+        echo -e "${YELLOW}Access URLs:${NC}"
+        echo -e "  Frontend: ${GREEN}http://$MASTER_IP:30300${NC}"
+        echo -e "  Backend:  ${GREEN}http://$MASTER_IP:30500${NC}"
+        ;;
+
+    scale-frontend)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: No replica count specified${NC}"
+            echo "Usage: $0 scale-frontend N"
+            exit 1
+        fi
+        echo -e "${BLUE}Scaling frontend to $2 replicas...${NC}"
+        run_kubectl "scale deployment/cicd-frontend --replicas=$2 -n monitoring"
+        echo -e "${GREEN}✓ Scaling initiated${NC}"
+        ;;
+
+    scale-backend)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: No replica count specified${NC}"
+            echo "Usage: $0 scale-backend N"
+            exit 1
+        fi
+        echo -e "${BLUE}Scaling backend to $2 replicas...${NC}"
+        run_kubectl "scale deployment/cicd-backend --replicas=$2 -n monitoring"
+        echo -e "${GREEN}✓ Scaling initiated${NC}"
+        ;;
+
+    restart-frontend)
+        echo -e "${BLUE}Restarting frontend deployment...${NC}"
+        run_kubectl "rollout restart deployment/cicd-frontend -n monitoring"
+        echo -e "${GREEN}✓ Restart initiated${NC}"
+        run_kubectl "rollout status deployment/cicd-frontend -n monitoring --timeout=120s" || true
+        ;;
+
+    restart-backend)
+        echo -e "${BLUE}Restarting backend deployment...${NC}"
+        run_kubectl "rollout restart deployment/cicd-backend -n monitoring"
+        echo -e "${GREEN}✓ Restart initiated${NC}"
+        run_kubectl "rollout status deployment/cicd-backend -n monitoring --timeout=120s" || true
+        ;;
+
+    logs-frontend)
+        echo -e "${BLUE}Frontend logs (last 50 lines):${NC}"
+        run_kubectl "logs -l app=cicd-frontend -n monitoring --tail=50"
+        ;;
+
+    logs-backend)
+        echo -e "${BLUE}Backend logs (last 50 lines):${NC}"
+        run_kubectl "logs -l app=cicd-backend -n monitoring --tail=50"
+        ;;
+
+    status-fullstack)
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        echo -e "${MAGENTA}Full Stack Status${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        
+        echo -e "\n${YELLOW}Backend:${NC}"
+        run_kubectl "get deployment cicd-backend -n monitoring"
+        run_kubectl "get pods -l app=cicd-backend -n monitoring"
+        
+        echo -e "\n${YELLOW}Frontend:${NC}"
+        run_kubectl "get deployment cicd-frontend -n monitoring"
+        run_kubectl "get pods -l app=cicd-frontend -n monitoring"
+        
+        echo -e "\n${YELLOW}Services:${NC}"
+        run_kubectl "get svc cicd-backend cicd-frontend -n monitoring"
+        
+        MASTER_IP=$(get_private_ip 'node-0')
+        echo -e "\n${YELLOW}Access URLs:${NC}"
+        echo -e "  Frontend: ${GREEN}http://$MASTER_IP:30300${NC}"
+        echo -e "  Backend:  ${GREEN}http://$MASTER_IP:30500${NC}"
+        ;;
+
+    delete-frontend)
+        echo -e "${RED}Deleting frontend deployment...${NC}"
+        read -p "Are you sure? (yes/no): " confirm
+        if [ "$confirm" = "yes" ]; then
+            run_kubectl "delete deployment cicd-frontend -n monitoring"
+            run_kubectl "delete service cicd-frontend -n monitoring"
+            echo -e "${GREEN}✓ Frontend deleted${NC}"
+        else
+            echo "Cancelled"
+        fi
+        ;;
+
+    delete-backend)
+        echo -e "${RED}Deleting backend deployment...${NC}"
+        read -p "Are you sure? (yes/no): " confirm
+        if [ "$confirm" = "yes" ]; then
+            run_kubectl "delete deployment cicd-backend -n monitoring"
+            run_kubectl "delete service cicd-backend -n monitoring"
+            echo -e "${GREEN}✓ Backend deleted${NC}"
+        else
+            echo "Cancelled"
+        fi
+        ;;
+
+    # ========================================================================
     # Deployment Commands
     # ========================================================================
     deploy)
@@ -238,6 +413,27 @@ case $COMMAND in
         echo ""
         ansible-playbook -i "$INVENTORY" "$PLAYBOOK"
         echo -e "${GREEN}✓ Deployment completed${NC}"
+        ;;
+
+    deploy-grafana)
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        echo -e "${MAGENTA}Deploying Grafana${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+
+        # Copy manifest to primary master
+        ansible k8s_primary_master -i "$INVENTORY" -m copy \
+            -a "src=$ANSIBLE_DIR/files/k8s/grafana-deployment.yml dest=/tmp/grafana-deployment.yml" -b
+
+        # Apply manifest
+        run_kubectl "apply -f /tmp/grafana-deployment.yml"
+
+        echo -e "${GREEN}✓ Grafana deployment updated${NC}"
+        echo -e "${YELLOW}Waiting for rollout...${NC}"
+        run_kubectl "rollout status deployment/grafana -n monitoring --timeout=120s" || true
+
+        echo ""
+        echo -e "${GREEN}✓ Grafana deployed successfully${NC}"
+        echo -e "${YELLOW}Access at:${NC} http://$(get_private_ip 'node-0'):30030"
         ;;
 
     # ========================================================================
@@ -262,14 +458,14 @@ case $COMMAND in
         echo -e "${CYAN}══════════════════════════════════════════${NC}"
         echo -e "${MAGENTA}Phase 2: Join Secondary Masters${NC}"
         echo -e "${CYAN}══════════════════════════════════════════${NC}"
-        
+
         # Check if join commands exist
         if [ ! -f "/tmp/k8s-join-commands/join-commands.sh" ]; then
             echo -e "${YELLOW}⚠️  Join commands not found. This may fail if Phase 1 was run more than 2 hours ago.${NC}"
             echo -e "${YELLOW}If Phase 2 fails, re-run Phase 1 or regenerate join commands on the primary master.${NC}"
             echo ""
         fi
-        
+
         ansible-playbook -i "$INVENTORY" "$PLAYBOOK" --tags "phase2"
         echo -e "${GREEN}✓ Phase 2 completed${NC}"
         echo -e "${YELLOW}Next: Run '$0 phase3' to join worker nodes${NC}"
@@ -568,12 +764,13 @@ case $COMMAND in
 
         if [ -n "$MASTER_IP" ]; then
             echo -e "\n${YELLOW}📦 Application:${NC}"
-            echo -e "   Python App:    ${GREEN}http://$MASTER_IP:30500${NC}"
+            echo -e "   Frontend:      ${GREEN}http://$MASTER_IP:30300${NC}"
+            echo -e "   Backend:       ${GREEN}http://$MASTER_IP:30500${NC}"
             echo -e "   Health Check:  http://$MASTER_IP:30500/api/health"
 
             echo -e "\n${YELLOW}📊 Monitoring:${NC}"
             echo -e "   Prometheus:    ${GREEN}http://$MASTER_IP:30090${NC}"
-            echo -e "   Grafana:       ${GREEN}http://$MASTER_IP:30300${NC} (admin/admin)"
+            echo -e "   Grafana:       ${GREEN}http://$MASTER_IP:30030${NC} (admin/admin)"
 
             echo -e "\n${YELLOW}🧪 Testing:${NC}"
             echo -e "   Selenium Hub:  ${GREEN}http://$MASTER_IP:30444${NC}"

@@ -40,7 +40,7 @@ locals {
 resource "local_file" "ansible_inventory" {
   depends_on = [null_resource.vagrant_vms]
 
-  content = templatefile("${path.module}/inventory.tftpl", {
+  content = templatefile("${path.module}/inventory-k8s.tftpl", {
     ip_addrs = local.vm_ips
     ssh_key  = "~/.vagrant.d/insecure_private_key"
   })

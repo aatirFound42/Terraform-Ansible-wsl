@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cicd-frontend
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cicd-frontend
+  template:
+    metadata:
+      labels:
+        app: cicd-frontend
+        tier: frontend
+    annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      securityContext:
+        runAsUser: 0  # Run as root
+        runAsGroup: 0
+      containers:
+      - name: frontend
+        image: ghcr.io/aatirfound42/python-cicd-4localservers-withtools/frontend:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        env:
+        # ADD THESE ENVIRONMENT VARIABLES
+        - name: BACKEND_URL
+          value: "http://cicd-backend.monitoring.svc.cluster.local:5000"
+        - name: BACKEND_API_URL
+          value: "http://cicd-backend.monitoring.svc.cluster.local:5000/api"
+        # If your frontend needs these
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "80"
+        securityContext:
+          allowPrivilegeEscalation: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        # ADJUST PROBES - give container more time to start
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30  # Increased from 20
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10  # Increased from 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cicd-frontend
+  namespace: monitoring
+spec:
+  type: NodePort
+  selector:
+    app: cicd-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30300
+    protocol: TCP

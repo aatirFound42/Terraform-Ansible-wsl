@@ -6,6 +6,9 @@
 - name: Configure HAProxy Load Balancer
   hosts: k8s_loadbalancer
   become: true
+  tags:
+    - phase1
+    - loadbalancer
 
   tasks:
     - name: Display load balancer setup info
@@ -359,6 +362,9 @@
 - name: Initialize Primary Kubernetes Master
   hosts: k8s_primary_master
   become: true
+  tags:
+    - phase1
+    - primary-master
 
   tasks:
     - name: Verify load balancer endpoint is reachable
@@ -429,12 +435,22 @@
         group: vagrant
         mode: '0600'
 
+    - name: Check if Calico is already installed
+      ansible.builtin.shell: kubectl get namespace calico-system
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: calico_ns
+      ignore_errors: true
+      changed_when: false
+
     - name: Install Calico CNI
       ansible.builtin.shell: |
         kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
-      when: k8s_cni == "calico"
+      when:
+        - k8s_cni == "calico"
+        - calico_ns.rc != 0
 
     - name: Wait for Calico pods to be ready
       ansible.builtin.shell: |
@@ -472,6 +488,9 @@
 - name: Join Secondary Masters to Cluster
   hosts: k8s_secondary_masters
   become: true
+  tags:
+    - phase2
+    - secondary-masters
 
   tasks:
     - name: Check if secondary masters group is empty
@@ -533,6 +552,9 @@
 - name: Join Worker Nodes to Cluster
   hosts: k8s_workers
   become: true
+  tags:
+    - phase3
+    - workers
 
   tasks:
     - name: Check if node is already part of cluster
@@ -555,6 +577,9 @@
 - name: Deploy Applications to Kubernetes
   hosts: k8s_primary_master
   become: true
+  tags:
+    - phase4
+    - apps
 
   tasks:
     - name: Verify manifest files exist locally
@@ -564,7 +589,8 @@
       become: no
       loop:
         - files/k8s/namespace.yml
-        - files/k8s/python-app-deployment.yml
+        - files/k8s/backend-deployment.yml
+        - files/k8s/frontend-deployment.yml
         - files/k8s/prometheus-deployment.yml
         - files/k8s/grafana-deployment.yml
         - files/k8s/selenium-hub-deployment.yml
@@ -592,7 +618,8 @@
         mode: '0644'
       loop:
         - files/k8s/namespace.yml
-        - files/k8s/python-app-deployment.yml
+        - files/k8s/backend-deployment.yml
+        - files/k8s/frontend-deployment.yml
         - files/k8s/prometheus-deployment.yml
         - files/k8s/grafana-deployment.yml
         - files/k8s/selenium-hub-deployment.yml
@@ -605,15 +632,89 @@
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
 
-    - name: Apply application manifests
-      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/
+    # STEP 1: Deploy backend and monitoring infrastructure first
+    - name: Deploy backend and supporting services
+      ansible.builtin.shell: |
+        kubectl apply -f /opt/k8s-manifests/backend-deployment.yml
+        kubectl apply -f /opt/k8s-manifests/prometheus-deployment.yml
+        kubectl apply -f /opt/k8s-manifests/grafana-deployment.yml
+        kubectl apply -f /opt/k8s-manifests/pushgateway-deployment.yml
+        kubectl apply -f /opt/k8s-manifests/node-exporter-daemonset.yml
+        kubectl apply -f /opt/k8s-manifests/selenium-hub-deployment.yml
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
 
-    - name: Wait for deployments to be ready
+    # STEP 2: Wait for backend service to be available in DNS
+    - name: Wait for backend service to exist
+      ansible.builtin.shell: |
+        kubectl get service cicd-backend -n monitoring
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: backend_svc_check
+      retries: 10
+      delay: 5
+      until: backend_svc_check.rc == 0
+
+    # STEP 3: Wait for backend deployment to be ready
+    - name: Wait for backend deployment to be ready
       ansible.builtin.shell: |
         kubectl wait --for=condition=available --timeout=300s \
-          deployment/python-app \
+          deployment/cicd-backend -n monitoring
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      retries: 3
+      delay: 10
+      register: backend_wait
+      until: backend_wait.rc == 0
+
+    # STEP 4: Now deploy frontend (backend DNS entry exists)
+    - name: Deploy frontend application
+      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/frontend-deployment.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # STEP 5: Deploy remaining selenium chrome nodes
+    - name: Deploy selenium chrome nodes
+      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/selenium-chrome-deployment.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # STEP 6: Wait for all deployments to be ready
+    - name: Wait for deployments to be ready (one by one)
+      tags: wait-deployments
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=available --timeout=180s \
+          deployment/{{ item }} -n monitoring || true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      loop:
+        - cicd-backend
+        - cicd-frontend
+        - prometheus
+        - grafana
+        - selenium-hub
+        - pushgateway
+      register: deployment_wait
+      failed_when: false
+
+    - name: Check which deployments are not ready
+      ansible.builtin.shell: |
+        kubectl get deployments -n monitoring -o json | \
+        jq -r '.items[] | select(.status.conditions[]? | select(.type=="Available" and .status=="False")) | .metadata.name'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: not_ready_deployments
+      failed_when: false
+
+    - name: Display deployment status
+      ansible.builtin.debug:
+        msg: "Not ready deployments: {{ not_ready_deployments.stdout_lines | default(['All deployments ready']) }}"
+
+    - name: Wait for all deployments to be ready
+      tags: wait-deployments
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=available --timeout=300s \
+          deployment/cicd-frontend \
           deployment/prometheus \
           deployment/grafana \
           deployment/selenium-hub \
@@ -626,15 +727,35 @@
       register: deployment_wait
       until: deployment_wait.rc == 0
 
+    - name: Get all pods status
+      ansible.builtin.shell: kubectl get pods -n monitoring -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: pods_info
+
     - name: Get service information
       ansible.builtin.shell: kubectl get svc -n monitoring -o wide
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
       register: services_info
 
+    - name: Display pods information
+      ansible.builtin.debug:
+        msg: "{{ pods_info.stdout_lines }}"
+
     - name: Display service information
       ansible.builtin.debug:
         msg: "{{ services_info.stdout_lines }}"
+
+    - name: Get NodePort URLs for services
+      ansible.builtin.shell: |
+        echo "Backend: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'):$(kubectl get svc cicd-backend -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')"
+        echo "Frontend: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'):$(kubectl get svc cicd-frontend -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')"
+        echo "Prometheus: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'):$(kubectl get svc prometheus -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')"
+        echo "Grafana: http://$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}'):$(kubectl get svc grafana -n monitoring -o jsonpath='{.spec.ports[0].nodePort}')"
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: nodeport_urls
 
     - name: Deployment completed
       ansible.builtin.debug:
@@ -648,9 +769,13 @@
           - "Worker Nodes: {{ groups['k8s_workers'] | length }}"
           - "Pod Network: {{ k8s_pod_network_cidr }}"
           - ""
+          - "Application Access URLs:"
+          - "{{ nodeport_urls.stdout_lines }}"
+          - ""
           - "Access kubectl from any master node:"
           - "  kubectl get nodes"
           - "  kubectl get pods -n monitoring"
+          - "  kubectl get svc -n monitoring"
           - ""
           - "HAProxy Stats: http://{{ groups['k8s_loadbalancer'][0] }}:8404"
           - "  User: admin / Pass: admin123"

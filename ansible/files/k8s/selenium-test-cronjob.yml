@@ -1,10 +1,11 @@
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: selenium-test
   namespace: monitoring
 spec:
-  schedule: "*/2 * * * *"
+  schedule: "*/2 * * * *"  # Every 2 minutes
   jobTemplate:
     spec:
       template:
@@ -27,7 +28,12 @@ spec:
               SELENIUM_HUB = "http://selenium-hub:4444/wd/hub"
               PUSHGATEWAY = "pushgateway:9091"
               JOB_NAME = "selenium_check"
-              TARGETS = ["http://python-app:5000"]
+              
+              # UPDATED: Test both backend and frontend
+              TARGETS = [
+                  "http://cicd-backend:5000",
+                  "http://cicd-frontend:80"
+              ]
 
               def check_url(url):
                   registry = CollectorRegistry()
@@ -47,8 +53,9 @@ spec:
                       driver = webdriver.Remote(command_executor=SELENIUM_HUB, options=options)
                       driver.get(url)
                       success = 1 if driver.page_source else 0
+                      print(f"✅ Success checking {url}")
                   except Exception as e:
-                      print(f"Failed {url}: {e}")
+                      print(f"❌ Failed {url}: {e}")
                   finally:
                       duration = time.time() - start_time
                       g_success.set(success)
@@ -57,12 +64,16 @@ spec:
                       if driver:
                           driver.quit()
 
-                      push_to_gateway(
-                          PUSHGATEWAY,
-                          job=JOB_NAME,
-                          registry=registry,
-                          grouping_key={'instance': url}
-                      )
+                      try:
+                          push_to_gateway(
+                              PUSHGATEWAY,
+                              job=JOB_NAME,
+                              registry=registry,
+                              grouping_key={'instance': url}
+                          )
+                          print(f"📊 Pushed metrics for {url} (success={success}, latency={duration:.2f}s)")
+                      except Exception as e:
+                          print(f"⚠️  Failed to push metrics: {e}")
 
               for target in TARGETS:
                   check_url(target)
