@@ -766,7 +766,7 @@ case $COMMAND in
             echo -e "\n${YELLOW}📦 Application:${NC}"
             echo -e "   Frontend:      ${GREEN}http://$MASTER_IP:30300${NC}"
             echo -e "   Backend:       ${GREEN}http://$MASTER_IP:30500${NC}"
-            echo -e "   Health Check:  http://$MASTER_IP:30500/api/health"
+            echo -e "   Health Check:  ${GREEN}http://$MASTER_IP:30500/api/health${NC}"
 
             echo -e "\n${YELLOW}📊 Monitoring:${NC}"
             echo -e "   Prometheus:    ${GREEN}http://$MASTER_IP:30090${NC}"

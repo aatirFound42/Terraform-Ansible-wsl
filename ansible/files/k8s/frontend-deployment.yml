@@ -13,7 +13,7 @@ spec:
       labels:
         app: cicd-frontend
         tier: frontend
-    annotations:
+      annotations:
         prometheus.io/scrape: "false"
     spec:
       securityContext:

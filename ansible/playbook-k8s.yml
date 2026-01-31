@@ -380,6 +380,19 @@
         path: /etc/kubernetes/admin.conf
       register: k8s_initialized
 
+    - name: Reset existing Kubernetes installation
+      ansible.builtin.shell: |
+        kubeadm reset -f
+        rm -rf /etc/kubernetes /var/lib/kubelet /var/lib/etcd
+        systemctl restart kubelet
+      when: k8s_initialized.stat.exists
+      register: k8s_reset
+
+    - name: Wait for kubelet to restart after reset
+      ansible.builtin.wait_for:
+        timeout: 10
+      when: k8s_initialized.stat.exists
+
     - name: Pre-pull Kubernetes control plane images
       ansible.builtin.shell: kubeadm config images pull
       when: not k8s_initialized.stat.exists
@@ -435,13 +448,13 @@
         group: vagrant
         mode: '0600'
 
-    - name: Check if Calico is already installed
-      ansible.builtin.shell: kubectl get namespace calico-system
-      environment:
-        KUBECONFIG: /etc/kubernetes/admin.conf
-      register: calico_ns
-      ignore_errors: true
-      changed_when: false
+   # - name: Check if Calico is already installed
+     # ansible.builtin.shell: kubectl get namespace calico-system
+    #  environment:
+   #     KUBECONFIG: /etc/kubernetes/admin.conf
+  #    register: calico_ns
+ #     ignore_errors: true
+#      changed_when: false
 
     - name: Install Calico CNI
       ansible.builtin.shell: |
@@ -450,7 +463,10 @@
         KUBECONFIG: /etc/kubernetes/admin.conf
       when:
         - k8s_cni == "calico"
-        - calico_ns.rc != 0
+        #- calico_ns.rc != 0
+      register: calico_install
+      failed_when: false
+      ignore_errors: yes
 
     - name: Wait for Calico pods to be ready
       ansible.builtin.shell: |
@@ -461,6 +477,8 @@
       delay: 10
       register: calico_wait
       until: calico_wait.rc == 0
+      failed_when: false
+      ignore_errors: yes
 
     - name: Get join command for workers
       ansible.builtin.shell: kubeadm token create --print-join-command

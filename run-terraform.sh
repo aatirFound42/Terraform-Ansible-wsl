@@ -1,6 +1,7 @@
 #!/bin/bash
 # run-terraform.sh - Run Terraform with Vagrant on WSL for Kubernetes
 # Updated for 8-VM setup (2 masters + 6 workers)
+# Enhanced with selective node destruction and management
 
 set -e
 
@@ -9,6 +10,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,19 +53,272 @@ setup_ssh_keys() {
     echo -e "${GREEN}✓ Old host keys cleared${NC}"
 }
 
+# Function to validate node number
+validate_node_number() {
+    local node_num=$1
+    if ! [[ "$node_num" =~ ^[0-7]$ ]]; then
+        echo -e "${RED}Error: Invalid node number '$node_num'. Must be between 0-7${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Function to get node role
+get_node_role() {
+    local node_num=$1
+    if [ "$node_num" -le 1 ]; then
+        echo "Master-$((node_num + 1))"
+    else
+        echo "Worker-$((node_num - 1))"
+    fi
+}
+
+# Function to destroy specific node
+destroy_node() {
+    local node_num=$1
+    
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local ip="192.168.56.$((10 + node_num))"
+    local role=$(get_node_role "$node_num")
+
+    echo -e "${YELLOW}Destroying node-$node_num ($ip) [$role]...${NC}"
+    
+    cd "$TERRAFORM_DIR"
+    
+    # Destroy using Vagrant directly
+    if vagrant destroy -f node-$node_num 2>/dev/null; then
+        echo -e "${GREEN}✓ node-$node_num destroyed successfully${NC}"
+        
+        # Clean SSH known host entry
+        ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$ip" 2>/dev/null || true
+        
+        # Taint the Terraform resource to force recreation on next apply
+        terraform taint "null_resource.vagrant_vms[$node_num]" 2>/dev/null || \
+            echo -e "${YELLOW}⚠ Note: Terraform resource tainted (normal if using destroy)${NC}"
+    else
+        echo -e "${RED}✗ Failed to destroy node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to destroy multiple nodes
+destroy_nodes() {
+    local nodes=("$@")
+    local success_count=0
+    local fail_count=0
+
+    echo -e "${BLUE}Destroying ${#nodes[@]} node(s)...${NC}"
+    echo ""
+
+    for node in "${nodes[@]}"; do
+        if destroy_node "$node"; then
+            ((success_count++))
+        else
+            ((fail_count++))
+        fi
+        echo ""
+    done
+
+    echo -e "${BLUE}Destruction Summary:${NC}"
+    echo -e "  ${GREEN}Success: $success_count${NC}"
+    if [ $fail_count -gt 0 ]; then
+        echo -e "  ${RED}Failed: $fail_count${NC}"
+    fi
+}
+
+# Function to destroy by role (masters or workers)
+destroy_by_role() {
+    local role=$1
+    local nodes=()
+
+    case $role in
+        masters)
+            nodes=(0 1)
+            echo -e "${YELLOW}Destroying all MASTER nodes (0-1)...${NC}"
+            ;;
+        workers)
+            nodes=(2 3 4 5 6 7)
+            echo -e "${YELLOW}Destroying all WORKER nodes (2-7)...${NC}"
+            ;;
+        *)
+            echo -e "${RED}Error: Invalid role '$role'. Use 'masters' or 'workers'${NC}"
+            return 1
+            ;;
+    esac
+
+    echo -e "${YELLOW}This will destroy ${#nodes[@]} nodes. Continue? (y/N)${NC}"
+    read -r response
+    if [[ ! "$response" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    destroy_nodes "${nodes[@]}"
+}
+
+# Function to restart a node (destroy and recreate)
+restart_node() {
+    local node_num=$1
+    
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local role=$(get_node_role "$node_num")
+    
+    echo -e "${BLUE}Restarting node-$node_num [$role]...${NC}"
+    echo ""
+    
+    # Destroy the node
+    if destroy_node "$node_num"; then
+        echo ""
+        echo -e "${BLUE}Recreating node-$node_num...${NC}"
+        
+        cd "$TERRAFORM_DIR"
+        
+        # Recreate using terraform apply targeting this specific resource
+        terraform apply -auto-approve -target="null_resource.vagrant_vms[$node_num]"
+        
+        echo ""
+        echo -e "${GREEN}✓ node-$node_num restarted successfully${NC}"
+        
+        # Wait for VM to be ready
+        echo -e "${BLUE}Waiting for VM to be ready...${NC}"
+        sleep 15
+        
+        # Test connectivity
+        local ip="192.168.56.$((10 + node_num))"
+        local ssh_key="$HOME/ssh-keys/insecure_private_key"
+        
+        echo -n "Testing connectivity to node-$node_num ($ip): "
+        if timeout 5 ssh -i "$ssh_key" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            -o LogLevel=ERROR \
+            vagrant@$ip "echo 'OK'" 2>/dev/null; then
+            echo -e "${GREEN}✓ Accessible${NC}"
+        else
+            echo -e "${YELLOW}⚠ Not ready yet (may need a moment)${NC}"
+        fi
+    else
+        echo -e "${RED}✗ Failed to restart node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to list all nodes
+list_nodes() {
+    echo -e "${BLUE}Cluster Nodes:${NC}"
+    echo ""
+    
+    cd "$TERRAFORM_DIR"
+    
+    # Use the WSL-native key location
+    if [ -f "$HOME/ssh-keys/insecure_private_key" ]; then
+        SSH_KEY="$HOME/ssh-keys/insecure_private_key"
+    else
+        SSH_KEY="$HOME/.vagrant.d/insecure_private_key"
+    fi
+
+    echo -e "${CYAN}Masters:${NC}"
+    for i in 0 1; do
+        IP="192.168.56.$((10 + i))"
+        ROLE=$(get_node_role $i)
+        
+        # Check if VM exists in Vagrant
+        if vagrant status node-$i 2>/dev/null | grep -q "running"; then
+            STATUS="${GREEN}running${NC}"
+            
+            # Test SSH
+            if timeout 3 ssh -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=3 \
+                -o LogLevel=ERROR \
+                vagrant@$IP "echo 'OK'" 2>/dev/null; then
+                SSH_STATUS="${GREEN}✓${NC}"
+            else
+                SSH_STATUS="${YELLOW}⚠${NC}"
+            fi
+        else
+            STATUS="${RED}stopped${NC}"
+            SSH_STATUS="${RED}✗${NC}"
+        fi
+        
+        echo -e "  [$i] node-$i ($IP) [$ROLE] - Status: $STATUS, SSH: $SSH_STATUS"
+    done
+
+    echo ""
+    echo -e "${CYAN}Workers:${NC}"
+    for i in 2 3 4 5 6 7; do
+        IP="192.168.56.$((10 + i))"
+        ROLE=$(get_node_role $i)
+        
+        # Check if VM exists in Vagrant
+        if vagrant status node-$i 2>/dev/null | grep -q "running"; then
+            STATUS="${GREEN}running${NC}"
+            
+            # Test SSH
+            if timeout 3 ssh -i "$SSH_KEY" \
+                -o StrictHostKeyChecking=no \
+                -o UserKnownHostsFile=/dev/null \
+                -o ConnectTimeout=3 \
+                -o LogLevel=ERROR \
+                vagrant@$IP "echo 'OK'" 2>/dev/null; then
+                SSH_STATUS="${GREEN}✓${NC}"
+            else
+                SSH_STATUS="${YELLOW}⚠${NC}"
+            fi
+        else
+            STATUS="${RED}stopped${NC}"
+            SSH_STATUS="${RED}✗${NC}"
+        fi
+        
+        echo -e "  [$i] node-$i ($IP) [$ROLE] - Status: $STATUS, SSH: $SSH_STATUS"
+    done
+}
+
 # Function to display usage
 usage() {
-    echo "Usage: $0 [init|plan|apply|destroy|status|ssh|info|clean]"
+    echo -e "${BLUE}Usage:${NC} $0 [COMMAND] [OPTIONS]"
     echo ""
-    echo "Commands:"
-    echo "  init     - Initialize Terraform"
-    echo "  plan     - Show Terraform execution plan"
-    echo "  apply    - Create 8 VMs for Kubernetes cluster"
-    echo "  destroy  - Destroy all VMs"
-    echo "  status   - Show VM status and connectivity"
-    echo "  ssh N    - SSH into VM number N (0-7)"
-    echo "  info     - Show cluster information and next steps"
-    echo "  clean    - Clean all Terraform and Vagrant files"
+    echo -e "${BLUE}Basic Commands:${NC}"
+    echo "  init                    - Initialize Terraform"
+    echo "  plan                    - Show Terraform execution plan"
+    echo "  apply                   - Create 8 VMs for Kubernetes cluster"
+    echo "  destroy                 - Destroy all VMs"
+    echo "  status                  - Show VM status and connectivity"
+    echo "  info                    - Show cluster information and next steps"
+    echo "  clean                   - Clean all Terraform and Vagrant files"
+    echo ""
+    echo -e "${BLUE}Node Management Commands:${NC}"
+    echo "  list                    - List all nodes with their status"
+    echo "  destroy-node N          - Destroy a specific node (0-7)"
+    echo "  destroy-nodes N1 N2...  - Destroy multiple specific nodes"
+    echo "  destroy-masters         - Destroy all master nodes (0-1)"
+    echo "  destroy-workers         - Destroy all worker nodes (2-7)"
+    echo "  restart-node N          - Restart (destroy + recreate) a specific node"
+    echo ""
+    echo -e "${BLUE}SSH Commands:${NC}"
+    echo "  ssh N                   - SSH into VM number N (0-7)"
+    echo ""
+    echo -e "${BLUE}Examples:${NC}"
+    echo "  $0 apply                      # Create all 8 VMs"
+    echo "  $0 list                       # List all nodes"
+    echo "  $0 destroy-node 3             # Destroy worker-2 (node-3)"
+    echo "  $0 destroy-nodes 2 3 4        # Destroy workers 1-3"
+    echo "  $0 destroy-workers            # Destroy all worker nodes"
+    echo "  $0 restart-node 0             # Restart master-1"
+    echo "  $0 ssh 0                      # SSH to master-1"
+    echo ""
+    echo -e "${BLUE}Node Layout:${NC}"
+    echo -e "  ${CYAN}Masters:${NC}  0-1  (192.168.56.10-11)"
+    echo -e "  ${CYAN}Workers:${NC}  2-7  (192.168.56.12-17)"
+    echo ""
     exit 1
 }
 
@@ -87,9 +342,9 @@ show_cluster_info() {
     echo "  node-7 (192.168.56.17) - Worker 6"
     echo ""
     echo -e "${BLUE}Resources:${NC}"
-    echo "  Masters: 2 vCPU, 2GB RAM each"
-    echo "  Workers: 2 vCPU, 1.5GB RAM each"
-    echo "  Total: 16 vCPU, 13.5GB RAM"
+    echo "  Masters: 2 vCPU, 4GB RAM each"
+    echo "  Workers: 1 vCPU, 2GB RAM each"
+    echo "  Total: 10 vCPU, 20GB RAM"
     echo ""
 }
 
@@ -100,9 +355,17 @@ if [ ! -d "$TERRAFORM_DIR" ]; then
 fi
 
 # Parse command
-COMMAND="${1:-apply}"
+COMMAND="${1:-}"
+
+if [ -z "$COMMAND" ]; then
+    usage
+fi
 
 case $COMMAND in
+    help|-h|--help)
+        usage
+        ;;
+
     init)
         echo -e "${BLUE}Initializing Terraform...${NC}"
         cd "$TERRAFORM_DIR"
@@ -119,7 +382,7 @@ case $COMMAND in
     apply)
         echo -e "${BLUE}Creating 8 VMs for Kubernetes cluster...${NC}"
         show_cluster_info
-        
+
         cd "$TERRAFORM_DIR"
 
         # Check if already initialized
@@ -169,14 +432,14 @@ case $COMMAND in
         # Test connectivity with proper key
         echo ""
         echo -e "${BLUE}Testing SSH connectivity...${NC}"
-        
+
         # Use the WSL-native key location
         SSH_KEY="$HOME/ssh-keys/insecure_private_key"
 
         SUCCESS_COUNT=0
         MASTER_COUNT=0
         WORKER_COUNT=0
-        
+
         # Test masters (nodes 0-1)
         echo -e "${YELLOW}Master nodes:${NC}"
         for i in 0 1; do
@@ -195,7 +458,7 @@ case $COMMAND in
                 echo -e "${YELLOW}⚠ Not ready yet${NC}"
             fi
         done
-        
+
         # Test workers (nodes 2-7)
         echo -e "${YELLOW}Worker nodes:${NC}"
         for i in 2 3 4 5 6 7; do
@@ -241,6 +504,13 @@ case $COMMAND in
 
     destroy)
         echo -e "${YELLOW}Destroying all VMs...${NC}"
+        echo -e "${YELLOW}This will destroy all 8 nodes. Continue? (y/N)${NC}"
+        read -r response
+        if [[ ! "$response" =~ ^[Yy]$ ]]; then
+            echo "Cancelled."
+            exit 0
+        fi
+
         cd "$TERRAFORM_DIR"
         terraform destroy -auto-approve
 
@@ -251,19 +521,70 @@ case $COMMAND in
         echo -e "${GREEN}✓ All VMs destroyed${NC}"
         ;;
 
+    list)
+        list_nodes
+        ;;
+
+    destroy-node)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 destroy-node N"
+            echo "Example: $0 destroy-node 3"
+            exit 1
+        fi
+        destroy_node "$2"
+        ;;
+
+    destroy-nodes)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: At least one node number required${NC}"
+            echo "Usage: $0 destroy-nodes N1 N2 N3..."
+            echo "Example: $0 destroy-nodes 2 3 4"
+            exit 1
+        fi
+        shift  # Remove 'destroy-nodes' from arguments
+        
+        # Validate all nodes first
+        for node in "$@"; do
+            if ! validate_node_number "$node"; then
+                exit 1
+            fi
+        done
+        
+        destroy_nodes "$@"
+        ;;
+
+    destroy-masters)
+        destroy_by_role "masters"
+        ;;
+
+    destroy-workers)
+        destroy_by_role "workers"
+        ;;
+
+    restart-node)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 restart-node N"
+            echo "Example: $0 restart-node 0"
+            exit 1
+        fi
+        restart_node "$2"
+        ;;
+
     status)
         echo -e "${BLUE}Kubernetes Cluster Status:${NC}"
         echo ""
-        
+
         cd "$TERRAFORM_DIR"
-        
+
         # Show Terraform outputs
         echo -e "${BLUE}Cluster Configuration:${NC}"
         terraform output -json 2>/dev/null | jq -r '
             "Masters: " + (.master_ips.value | join(", ")),
             "Workers: " + (.worker_ips.value | join(", "))
         ' 2>/dev/null || echo "Run terraform apply first"
-        
+
         echo ""
         echo -e "${BLUE}VM Status:${NC}"
         vagrant global-status | grep "node-" || echo "No VMs running"
@@ -283,7 +604,7 @@ case $COMMAND in
 
         MASTER_UP=0
         WORKER_UP=0
-        
+
         echo -e "${YELLOW}Master Nodes:${NC}"
         for i in 0 1; do
             IP="192.168.56.$((10 + i))"
@@ -301,7 +622,7 @@ case $COMMAND in
                 echo -e "${RED}✗ Not accessible${NC}"
             fi
         done
-        
+
         echo -e "${YELLOW}Worker Nodes:${NC}"
         for i in 2 3 4 5 6 7; do
             IP="192.168.56.$((10 + i))"
@@ -319,7 +640,7 @@ case $COMMAND in
                 echo -e "${RED}✗ Not accessible${NC}"
             fi
         done
-        
+
         echo ""
         echo -e "${BLUE}Summary:${NC}"
         echo "  Masters: $MASTER_UP/2 accessible"
@@ -328,16 +649,16 @@ case $COMMAND in
 
     ssh)
         VM_NUM="${2:-0}"
-        
+
         if [ "$VM_NUM" -lt 0 ] || [ "$VM_NUM" -gt 7 ]; then
             echo -e "${RED}Error: VM number must be between 0 and 7${NC}"
             echo "  0-1: Master nodes"
             echo "  2-7: Worker nodes"
             exit 1
         fi
-        
+
         IP="192.168.56.$((10 + VM_NUM))"
-        
+
         if [ "$VM_NUM" -le 1 ]; then
             ROLE="Master-$((VM_NUM + 1))"
         else
@@ -398,12 +719,15 @@ case $COMMAND in
 
     info)
         show_cluster_info
-        
+
         echo -e "${BLUE}Useful Commands:${NC}"
-        echo "  ./run-terraform.sh status   - Check cluster status"
-        echo "  ./run-terraform.sh ssh N    - SSH to node N (0-7)"
-        echo "  ./run-ansible-k8s.sh deploy - Deploy Kubernetes"
-        echo "  kubectl get nodes           - Check K8s nodes (after deploy)"
+        echo "  ./run-terraform.sh status          - Check cluster status"
+        echo "  ./run-terraform.sh list            - List all nodes"
+        echo "  ./run-terraform.sh ssh N           - SSH to node N (0-7)"
+        echo "  ./run-terraform.sh destroy-node N  - Destroy specific node"
+        echo "  ./run-terraform.sh restart-node N  - Restart specific node"
+        echo "  ./run-ansible-k8s.sh deploy        - Deploy Kubernetes"
+        echo "  kubectl get nodes                  - Check K8s nodes (after deploy)"
         echo ""
         ;;
 
@@ -436,6 +760,10 @@ case $COMMAND in
         ;;
 
     *)
+        if [ -n "$COMMAND" ]; then
+            echo -e "${RED}Error: Unknown command '$COMMAND'${NC}"
+            echo ""
+        fi
         usage
         ;;
 esac
