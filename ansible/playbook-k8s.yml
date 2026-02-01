@@ -615,6 +615,7 @@
         - files/k8s/selenium-chrome-deployment.yml
         - files/k8s/pushgateway-deployment.yml
         - files/k8s/node-exporter-daemonset.yml
+        - files/k8s/selenium-test-cronjob.yml
       register: manifest_check
 
     - name: Fail if any manifest files are missing
@@ -644,6 +645,7 @@
         - files/k8s/selenium-chrome-deployment.yml
         - files/k8s/pushgateway-deployment.yml
         - files/k8s/node-exporter-daemonset.yml
+        - files/k8s/selenium-test-cronjob.yml
 
     - name: Apply namespace
       ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/namespace.yml
@@ -694,6 +696,18 @@
     # STEP 5: Deploy remaining selenium chrome nodes
     - name: Deploy selenium chrome nodes
       ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/selenium-chrome-deployment.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # STEP 5: Deploy remaining selenium chrome nodes
+    - name: Deploy selenium chrome nodes
+      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/selenium-chrome-deployment.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    # STEP 5b: Deploy selenium test cronjob (after hub + chrome are up)
+    - name: Deploy selenium test cronjob
+      ansible.builtin.shell: kubectl apply -f /opt/k8s-manifests/selenium-test-cronjob.yml
       environment:
         KUBECONFIG: /etc/kubernetes/admin.conf
 

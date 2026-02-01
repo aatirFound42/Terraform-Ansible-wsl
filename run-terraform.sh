@@ -1,7 +1,7 @@
 #!/bin/bash
 # run-terraform.sh - Run Terraform with Vagrant on WSL for Kubernetes
 # Updated for 8-VM setup (2 masters + 6 workers)
-# Enhanced with selective node destruction and management
+# Enhanced with selective node destruction and management + VM state control
 
 set -e
 
@@ -11,6 +11,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,10 +74,227 @@ get_node_role() {
     fi
 }
 
+# Function to suspend specific node
+suspend_node() {
+    local node_num=$1
+
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local role=$(get_node_role "$node_num")
+    echo -e "${YELLOW}Suspending node-$node_num [$role]...${NC}"
+
+    cd "$TERRAFORM_DIR"
+    if vagrant suspend node-$node_num 2>/dev/null; then
+        echo -e "${GREEN}✓ node-$node_num suspended${NC}"
+    else
+        echo -e "${RED}✗ Failed to suspend node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to resume specific node
+resume_node() {
+    local node_num=$1
+
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local role=$(get_node_role "$node_num")
+    echo -e "${BLUE}Resuming node-$node_num [$role]...${NC}"
+
+    cd "$TERRAFORM_DIR"
+    if vagrant resume node-$node_num 2>/dev/null; then
+        echo -e "${GREEN}✓ node-$node_num resumed${NC}"
+
+        # Test connectivity
+        local ip="192.168.56.$((10 + node_num))"
+        local ssh_key="$HOME/ssh-keys/insecure_private_key"
+
+        echo -e "${BLUE}Waiting for VM to be ready...${NC}"
+        sleep 10
+
+        echo -n "Testing connectivity: "
+        if timeout 5 ssh -i "$ssh_key" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            -o LogLevel=ERROR \
+            vagrant@$ip "echo 'OK'" 2>/dev/null; then
+            echo -e "${GREEN}✓ Accessible${NC}"
+        else
+            echo -e "${YELLOW}⚠ Not ready yet (may need a moment)${NC}"
+        fi
+    else
+        echo -e "${RED}✗ Failed to resume node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to halt specific node
+halt_node() {
+    local node_num=$1
+
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local role=$(get_node_role "$node_num")
+    echo -e "${YELLOW}Halting node-$node_num [$role]...${NC}"
+
+    cd "$TERRAFORM_DIR"
+    if vagrant halt node-$node_num 2>/dev/null; then
+        echo -e "${GREEN}✓ node-$node_num halted${NC}"
+    else
+        echo -e "${RED}✗ Failed to halt node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to start (up) specific node
+up_node() {
+    local node_num=$1
+
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local role=$(get_node_role "$node_num")
+    echo -e "${BLUE}Starting node-$node_num [$role]...${NC}"
+
+    cd "$TERRAFORM_DIR"
+    if vagrant up node-$node_num 2>/dev/null; then
+        echo -e "${GREEN}✓ node-$node_num started${NC}"
+
+        # Test connectivity
+        local ip="192.168.56.$((10 + node_num))"
+        local ssh_key="$HOME/ssh-keys/insecure_private_key"
+
+        echo -e "${BLUE}Waiting for VM to be ready...${NC}"
+        sleep 15
+
+        echo -n "Testing connectivity: "
+        if timeout 5 ssh -i "$ssh_key" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            -o LogLevel=ERROR \
+            vagrant@$ip "echo 'OK'" 2>/dev/null; then
+            echo -e "${GREEN}✓ Accessible${NC}"
+        else
+            echo -e "${YELLOW}⚠ Not ready yet (may need a moment)${NC}"
+        fi
+    else
+        echo -e "${RED}✗ Failed to start node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to reload specific node
+reload_node() {
+    local node_num=$1
+
+    if ! validate_node_number "$node_num"; then
+        return 1
+    fi
+
+    local role=$(get_node_role "$node_num")
+    echo -e "${BLUE}Reloading node-$node_num [$role]...${NC}"
+
+    cd "$TERRAFORM_DIR"
+    if vagrant reload node-$node_num 2>/dev/null; then
+        echo -e "${GREEN}✓ node-$node_num reloaded${NC}"
+
+        # Test connectivity
+        local ip="192.168.56.$((10 + node_num))"
+        local ssh_key="$HOME/ssh-keys/insecure_private_key"
+
+        echo -e "${BLUE}Waiting for VM to be ready...${NC}"
+        sleep 15
+
+        echo -n "Testing connectivity: "
+        if timeout 5 ssh -i "$ssh_key" \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            -o LogLevel=ERROR \
+            vagrant@$ip "echo 'OK'" 2>/dev/null; then
+            echo -e "${GREEN}✓ Accessible${NC}"
+        else
+            echo -e "${YELLOW}⚠ Not ready yet (may need a moment)${NC}"
+        fi
+    else
+        echo -e "${RED}✗ Failed to reload node-$node_num${NC}"
+        return 1
+    fi
+}
+
+# Function to perform bulk operations
+bulk_operation() {
+    local operation=$1
+    shift
+    local nodes=("$@")
+    local success_count=0
+    local fail_count=0
+
+    echo -e "${BLUE}Performing ${operation} on ${#nodes[@]} node(s)...${NC}"
+    echo ""
+
+    for node in "${nodes[@]}"; do
+        if ${operation}_node "$node"; then
+            ((success_count++))
+        else
+            ((fail_count++))
+        fi
+        echo ""
+    done
+
+    echo -e "${BLUE}Operation Summary:${NC}"
+    echo -e "  ${GREEN}Success: $success_count${NC}"
+    if [ $fail_count -gt 0 ]; then
+        echo -e "  ${RED}Failed: $fail_count${NC}"
+    fi
+}
+
+# Function to suspend/resume/halt/up all nodes
+bulk_state_change() {
+    local action=$1
+    local target=$2  # "all", "masters", "workers"
+    local nodes=()
+
+    case $target in
+        all)
+            nodes=(0 1 2 3 4 5 6 7)
+            ;;
+        masters)
+            nodes=(0 1)
+            ;;
+        workers)
+            nodes=(2 3 4 5 6 7)
+            ;;
+        *)
+            echo -e "${RED}Error: Invalid target '$target'${NC}"
+            return 1
+            ;;
+    esac
+
+    case $action in
+        suspend|resume|halt|up)
+            bulk_operation "$action" "${nodes[@]}"
+            ;;
+        *)
+            echo -e "${RED}Error: Invalid action '$action'${NC}"
+            return 1
+            ;;
+    esac
+}
+
 # Function to destroy specific node
 destroy_node() {
     local node_num=$1
-    
+
     if ! validate_node_number "$node_num"; then
         return 1
     fi
@@ -85,16 +303,16 @@ destroy_node() {
     local role=$(get_node_role "$node_num")
 
     echo -e "${YELLOW}Destroying node-$node_num ($ip) [$role]...${NC}"
-    
+
     cd "$TERRAFORM_DIR"
-    
+
     # Destroy using Vagrant directly
     if vagrant destroy -f node-$node_num 2>/dev/null; then
         echo -e "${GREEN}✓ node-$node_num destroyed successfully${NC}"
-        
+
         # Clean SSH known host entry
         ssh-keygen -f "$HOME/.ssh/known_hosts" -R "$ip" 2>/dev/null || true
-        
+
         # Taint the Terraform resource to force recreation on next apply
         terraform taint "null_resource.vagrant_vms[$node_num]" 2>/dev/null || \
             echo -e "${YELLOW}⚠ Note: Terraform resource tainted (normal if using destroy)${NC}"
@@ -162,37 +380,37 @@ destroy_by_role() {
 # Function to restart a node (destroy and recreate)
 restart_node() {
     local node_num=$1
-    
+
     if ! validate_node_number "$node_num"; then
         return 1
     fi
 
     local role=$(get_node_role "$node_num")
-    
+
     echo -e "${BLUE}Restarting node-$node_num [$role]...${NC}"
     echo ""
-    
+
     # Destroy the node
     if destroy_node "$node_num"; then
         echo ""
         echo -e "${BLUE}Recreating node-$node_num...${NC}"
-        
+
         cd "$TERRAFORM_DIR"
-        
+
         # Recreate using terraform apply targeting this specific resource
         terraform apply -auto-approve -target="null_resource.vagrant_vms[$node_num]"
-        
+
         echo ""
         echo -e "${GREEN}✓ node-$node_num restarted successfully${NC}"
-        
+
         # Wait for VM to be ready
         echo -e "${BLUE}Waiting for VM to be ready...${NC}"
         sleep 15
-        
+
         # Test connectivity
         local ip="192.168.56.$((10 + node_num))"
         local ssh_key="$HOME/ssh-keys/insecure_private_key"
-        
+
         echo -n "Testing connectivity to node-$node_num ($ip): "
         if timeout 5 ssh -i "$ssh_key" \
             -o StrictHostKeyChecking=no \
@@ -214,9 +432,9 @@ restart_node() {
 list_nodes() {
     echo -e "${BLUE}Cluster Nodes:${NC}"
     echo ""
-    
+
     cd "$TERRAFORM_DIR"
-    
+
     # Use the WSL-native key location
     if [ -f "$HOME/ssh-keys/insecure_private_key" ]; then
         SSH_KEY="$HOME/ssh-keys/insecure_private_key"
@@ -228,11 +446,12 @@ list_nodes() {
     for i in 0 1; do
         IP="192.168.56.$((10 + i))"
         ROLE=$(get_node_role $i)
-        
-        # Check if VM exists in Vagrant
-        if vagrant status node-$i 2>/dev/null | grep -q "running"; then
+
+        # Get detailed status from Vagrant
+        STATUS_OUTPUT=$(vagrant status node-$i 2>/dev/null | grep "node-$i")
+
+        if echo "$STATUS_OUTPUT" | grep -q "running"; then
             STATUS="${GREEN}running${NC}"
-            
             # Test SSH
             if timeout 3 ssh -i "$SSH_KEY" \
                 -o StrictHostKeyChecking=no \
@@ -244,11 +463,17 @@ list_nodes() {
             else
                 SSH_STATUS="${YELLOW}⚠${NC}"
             fi
+        elif echo "$STATUS_OUTPUT" | grep -q "saved"; then
+            STATUS="${YELLOW}suspended${NC}"
+            SSH_STATUS="${YELLOW}○${NC}"
+        elif echo "$STATUS_OUTPUT" | grep -q "poweroff"; then
+            STATUS="${MAGENTA}halted${NC}"
+            SSH_STATUS="${RED}✗${NC}"
         else
-            STATUS="${RED}stopped${NC}"
+            STATUS="${RED}not created${NC}"
             SSH_STATUS="${RED}✗${NC}"
         fi
-        
+
         echo -e "  [$i] node-$i ($IP) [$ROLE] - Status: $STATUS, SSH: $SSH_STATUS"
     done
 
@@ -257,11 +482,12 @@ list_nodes() {
     for i in 2 3 4 5 6 7; do
         IP="192.168.56.$((10 + i))"
         ROLE=$(get_node_role $i)
-        
-        # Check if VM exists in Vagrant
-        if vagrant status node-$i 2>/dev/null | grep -q "running"; then
+
+        # Get detailed status from Vagrant
+        STATUS_OUTPUT=$(vagrant status node-$i 2>/dev/null | grep "node-$i")
+
+        if echo "$STATUS_OUTPUT" | grep -q "running"; then
             STATUS="${GREEN}running${NC}"
-            
             # Test SSH
             if timeout 3 ssh -i "$SSH_KEY" \
                 -o StrictHostKeyChecking=no \
@@ -273,13 +499,26 @@ list_nodes() {
             else
                 SSH_STATUS="${YELLOW}⚠${NC}"
             fi
+        elif echo "$STATUS_OUTPUT" | grep -q "saved"; then
+            STATUS="${YELLOW}suspended${NC}"
+            SSH_STATUS="${YELLOW}○${NC}"
+        elif echo "$STATUS_OUTPUT" | grep -q "poweroff"; then
+            STATUS="${MAGENTA}halted${NC}"
+            SSH_STATUS="${RED}✗${NC}"
         else
-            STATUS="${RED}stopped${NC}"
+            STATUS="${RED}not created${NC}"
             SSH_STATUS="${RED}✗${NC}"
         fi
-        
+
         echo -e "  [$i] node-$i ($IP) [$ROLE] - Status: $STATUS, SSH: $SSH_STATUS"
     done
+
+    echo ""
+    echo -e "${BLUE}Status Legend:${NC}"
+    echo -e "  ${GREEN}running${NC}    - VM is powered on"
+    echo -e "  ${YELLOW}suspended${NC}  - VM is saved to disk"
+    echo -e "  ${MAGENTA}halted${NC}     - VM is powered off"
+    echo -e "  ${RED}not created${NC} - VM doesn't exist"
 }
 
 # Function to display usage
@@ -303,17 +542,39 @@ usage() {
     echo "  destroy-workers         - Destroy all worker nodes (2-7)"
     echo "  restart-node N          - Restart (destroy + recreate) a specific node"
     echo ""
+    echo -e "${BLUE}VM State Control:${NC}"
+    echo "  suspend N               - Suspend (save) a specific node"
+    echo "  suspend-all             - Suspend all nodes"
+    echo "  suspend-masters         - Suspend all master nodes"
+    echo "  suspend-workers         - Suspend all worker nodes"
+    echo "  resume N                - Resume a suspended node"
+    echo "  resume-all              - Resume all suspended nodes"
+    echo "  resume-masters          - Resume all master nodes"
+    echo "  resume-workers          - Resume all worker nodes"
+    echo "  halt N                  - Halt (power off) a specific node"
+    echo "  halt-all                - Halt all nodes"
+    echo "  halt-masters            - Halt all master nodes"
+    echo "  halt-workers            - Halt all worker nodes"
+    echo "  up N                    - Start a halted node"
+    echo "  up-all                  - Start all halted nodes"
+    echo "  up-masters              - Start all master nodes"
+    echo "  up-workers              - Start all worker nodes"
+    echo "  reload N                - Reload (restart) a specific node"
+    echo ""
     echo -e "${BLUE}SSH Commands:${NC}"
     echo "  ssh N                   - SSH into VM number N (0-7)"
     echo ""
     echo -e "${BLUE}Examples:${NC}"
     echo "  $0 apply                      # Create all 8 VMs"
-    echo "  $0 list                       # List all nodes"
-    echo "  $0 destroy-node 3             # Destroy worker-2 (node-3)"
-    echo "  $0 destroy-nodes 2 3 4        # Destroy workers 1-3"
-    echo "  $0 destroy-workers            # Destroy all worker nodes"
-    echo "  $0 restart-node 0             # Restart master-1"
-    echo "  $0 ssh 0                      # SSH to master-1"
+    echo "  $0 list                       # List all nodes with states"
+    echo "  $0 suspend 3                  # Suspend worker-2 (save state)"
+    echo "  $0 suspend-all                # Suspend all nodes"
+    echo "  $0 resume 3                   # Resume worker-2"
+    echo "  $0 halt-workers               # Power off all workers"
+    echo "  $0 up-workers                 # Start all workers"
+    echo "  $0 reload 0                   # Reload master-1"
+    echo "  $0 destroy-node 3             # Destroy worker-2"
+    echo "  $0 restart-node 0             # Recreate master-1"
     echo ""
     echo -e "${BLUE}Node Layout:${NC}"
     echo -e "  ${CYAN}Masters:${NC}  0-1  (192.168.56.10-11)"
@@ -362,6 +623,7 @@ if [ -z "$COMMAND" ]; then
 fi
 
 case $COMMAND in
+
     help|-h|--help)
         usage
         ;;
@@ -543,14 +805,14 @@ case $COMMAND in
             exit 1
         fi
         shift  # Remove 'destroy-nodes' from arguments
-        
+
         # Validate all nodes first
         for node in "$@"; do
             if ! validate_node_number "$node"; then
                 exit 1
             fi
         done
-        
+
         destroy_nodes "$@"
         ;;
 
@@ -759,6 +1021,100 @@ case $COMMAND in
         echo -e "${GREEN}✓ Cleanup complete${NC}"
         ;;
 
+    # VM State Control Commands
+    suspend)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 suspend N"
+            exit 1
+        fi
+        suspend_node "$2"
+        ;;
+
+    suspend-all)
+        bulk_state_change "suspend" "all"
+        ;;
+
+    suspend-masters)
+        bulk_state_change "suspend" "masters"
+        ;;
+
+    suspend-workers)
+        bulk_state_change "suspend" "workers"
+        ;;
+
+    resume)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 resume N"
+            exit 1
+        fi
+        resume_node "$2"
+        ;;
+
+    resume-all)
+        bulk_state_change "resume" "all"
+        ;;
+
+    resume-masters)
+        bulk_state_change "resume" "masters"
+        ;;
+
+    resume-workers)
+        bulk_state_change "resume" "workers"
+        ;;
+
+    halt)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 halt N"
+            exit 1
+        fi
+        halt_node "$2"
+        ;;
+
+    halt-all)
+        bulk_state_change "halt" "all"
+        ;;
+
+    halt-masters)
+        bulk_state_change "halt" "masters"
+        ;;
+
+    halt-workers)
+        bulk_state_change "halt" "workers"
+        ;;
+
+    up)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 up N"
+            exit 1
+        fi
+        up_node "$2"
+        ;;
+
+    up-all)
+        bulk_state_change "up" "all"
+        ;;
+
+    up-masters)
+        bulk_state_change "up" "masters"
+        ;;
+
+    up-workers)
+        bulk_state_change "up" "workers"
+        ;;
+
+    reload)
+        if [ -z "$2" ]; then
+            echo -e "${RED}Error: Node number required${NC}"
+            echo "Usage: $0 reload N"
+            exit 1
+        fi
+        reload_node "$2"
+        ;;
+
     *)
         if [ -n "$COMMAND" ]; then
             echo -e "${RED}Error: Unknown command '$COMMAND'${NC}"
@@ -766,4 +1122,5 @@ case $COMMAND in
         fi
         usage
         ;;
+
 esac

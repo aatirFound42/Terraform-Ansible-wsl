@@ -111,6 +111,7 @@ usage() {
     echo -e "  ${GREEN}ha-test${NC}           - Test HA failover capability"
     echo ""
     echo -e "${YELLOW}Testing:${NC}"
+    echo -e "  ${GREEN}test-selenium${NC}     - Run Selenium test"
     echo -e "  ${GREEN}selenium-test${NC}     - Run Selenium test manually"
     echo -e "  ${GREEN}selenium-metrics${NC}  - View Selenium metrics from Pushgateway"
     echo ""
@@ -829,6 +830,33 @@ case $COMMAND in
     # ========================================================================
     # Testing
     # ========================================================================
+    test-selenium)
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+        echo -e "${MAGENTA}Testing Selenium Infrastructure${NC}"
+        echo -e "${CYAN}══════════════════════════════════════════${NC}"
+
+        echo -e "\n${YELLOW}1. Checking Hub Status:${NC}"
+        curl -s http://192.168.56.10:30444/status | jq -r '.value.ready' && echo "✅ Hub is ready" || echo "❌ Hub not ready"
+
+        echo -e "\n${YELLOW}2. Registered Nodes:${NC}"
+        curl -s http://192.168.56.10:30444/status | jq -r '.value.nodes[] | "  - \(.osInfo.name) \(.osInfo.version) - Max sessions: \(.maxSessions)"'
+
+        echo -e "\n${YELLOW}3. Recent Test Results:${NC}"
+        run_kubectl "get jobs -n monitoring | grep selenium-test | tail -5"
+
+        echo -e "\n${YELLOW}4. Latest Test Logs:${NC}"
+        LATEST_POD=$(run_kubectl "get pods -n monitoring -l job-name --sort-by=.metadata.creationTimestamp | grep selenium-test | tail -1 | awk '{print \$1}'")
+        if [ -n "$LATEST_POD" ]; then
+            run_kubectl "logs $LATEST_POD -n monitoring | tail -20"
+        fi
+
+        echo -e "\n${YELLOW}5. Metrics from Pushgateway:${NC}"
+        curl -s http://192.168.56.10:30091/metrics | grep "selenium_success\|selenium_latency" | tail -10
+
+        echo -e "\n${YELLOW}6. Manually trigger test:${NC}"
+        echo "Run: ./run-ansible-k8s.sh selenium-test"
+        ;;
+
     selenium-test)
         echo -e "${CYAN}══════════════════════════════════════════${NC}"
         echo -e "${MAGENTA}Running Selenium Test${NC}"
