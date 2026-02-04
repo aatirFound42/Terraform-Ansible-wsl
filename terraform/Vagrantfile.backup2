@@ -29,14 +29,6 @@ Vagrant.configure("2") do |config|
         vb.memory = i < 2 ? 4096 : MEMORY
         vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
         vb.customize ["modifyvm", :id, "--natdnsproxy1", "on"]
-
-	# ============================================================
-        # WSL/VirtualBox Fix: Disable problematic serial port
-        # This prevents the /dev/null VERR_PATH_NOT_FOUND error
-        # ============================================================
-        vb.customize ["modifyvm", :id, "--uart1", "off"]
-        vb.customize ["modifyvm", :id, "--uartmode1", "disconnected"]
-
       end
       
       # Ensure VM is ready

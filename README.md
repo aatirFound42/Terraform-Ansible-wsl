@@ -1,741 +1,899 @@
 # Kubernetes HA Multi-Master Cluster with CI/CD Pipeline
 
-A complete Infrastructure as Code (IaC) solution for deploying a production-ready High Availability Kubernetes cluster with integrated CI/CD pipeline, monitoring, and automated testing.
+A complete Infrastructure as Code (IaC) solution for deploying a production-ready High Availability Kubernetes cluster with integrated CI/CD pipeline, monitoring, and automated testing on VirtualBox using Terraform, Vagrant, and Ansible.
 
-## 🏗️ Architecture Overview
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Terraform](https://img.shields.io/badge/Terraform-1.0+-623CE4?logo=terraform)](https://www.terraform.io/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-1.28+-326CE5?logo=kubernetes)](https://kubernetes.io/)
+[![Ansible](https://img.shields.io/badge/Ansible-2.9+-EE0000?logo=ansible)](https://www.ansible.com/)
 
-**Infrastructure (9 VMs):**
-- **1 Load Balancer** - HAProxy for API server HA (192.168.56.9)
-- **2 Master Nodes** - Control plane with etcd (192.168.56.10-11)
-- **6 Worker Nodes** - Application workload nodes (192.168.56.12-17)
+---
 
-**Applications & Services:**
-- **Frontend** - React/Vue web application (NodePort 30300)
-- **Backend** - Flask REST API (NodePort 30500)
-- **Prometheus** - Metrics collection (NodePort 30090)
-- **Grafana** - Visualization dashboards (NodePort 30030)
-- **Selenium Grid** - Automated browser testing (NodePort 30444)
-- **Pushgateway** - Batch job metrics (NodePort 30091)
-- **Node Exporter** - System metrics (DaemonSet)
+## 📋 Table of Contents
+
+- [Overview](#-overview)
+- [Architecture](#-architecture)
+- [Prerequisites](#-prerequisites)
+- [Quick Start](#-quick-start)
+- [Project Structure](#-project-structure)
+- [Accessing Services](#-accessing-services)
+- [Management Commands](#-management-commands)
+- [Troubleshooting](#-troubleshooting)
+- [Advanced Usage](#-advanced-usage)
+- [Contributing](#-contributing)
+- [License](#-license)
+
+---
+
+## 🎯 Overview
+
+This project automates the deployment of a **production-grade High Availability Kubernetes cluster** with:
+
+- **9 Virtual Machines** (1 Load Balancer + 2 Masters + 5 Workers)
+- **HAProxy Load Balancer** for API server high availability
+- **Multi-master control plane** with etcd clustering
+- **Calico CNI** for pod networking
+- **Integrated monitoring** with Prometheus and Grafana
+- **Automated CI/CD testing** with Selenium Grid
+- **Sample applications** (Frontend + Backend)
+
+### Key Features
+
+✅ **High Availability**: Multi-master setup with HAProxy load balancing  
+✅ **Automated Deployment**: Complete infrastructure provisioning with Terraform and Ansible  
+✅ **Production-Ready**: Monitoring, logging, and health checks included  
+✅ **CI/CD Pipeline**: Automated browser testing with Selenium  
+✅ **Easy Management**: Comprehensive CLI tools for cluster operations  
+✅ **WSL Compatible**: Seamless integration with VirtualBox on Windows  
+
+---
+
+## 🏗️ Architecture
+
+### Infrastructure Layout
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Load Balancer (lb-0)                     │
+│                   HAProxy - 192.168.56.12                    │
+│                    (API HA & Stats)                         │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+        ┌──────────────┴──────────────┐
+        │                             │
+┌───────▼────────┐           ┌────────▼───────┐
+│  Master Node 0 │           │  Master Node 1 │
+│ 192.168.56.10  │           │ 192.168.56.11  │
+│ (Primary)      │◄─────────►│ (Secondary)    │
+│ 2 CPU, 2GB RAM │           │ 2 CPU, 2GB RAM │
+└────────────────┘           └────────────────┘
+        │                             │
+        └──────────────┬──────────────┘
+                       │
+        ┌──────────────┴─────────────────────────┐
+        │                                        │
+┌───────▼────────┐  ┌────────────┐  ┌──────────▼─────┐
+│  Worker Node 0 │  │     ...    │  │  Worker Node 4 │
+│ 192.168.56.12  │  │  3 more    │  │ 192.168.56.17  │
+│ 1 CPU, 1.5GB   │  │  workers   │  │ 1 CPU, 1.5GB   │
+└────────────────┘  └────────────┘  └────────────────┘
+```
+
+### Applications & Services
+
+| Service | Type | Port | Description |
+|---------|------|------|-------------|
+| **Frontend** | Web App | 30300 | React/Vue application |
+| **Backend** | REST API | 30500 | Flask backend service |
+| **Prometheus** | Monitoring | 30090 | Metrics collection |
+| **Grafana** | Dashboard | 30030 | Visualization (admin/admin) |
+| **Selenium Hub** | Testing | 30444 | Browser automation |
+| **Pushgateway** | Metrics | 30091 | Batch job metrics |
+| **HAProxy Stats** | LB Stats | 8404 | Load balancer stats (admin/admin123) |
+
+### Resource Allocation
+
+- **Total VMs**: 8 (1 LB + 2 Masters + 5 Workers)
+- **Total CPU**: 10 vCPU (1 LB + 4 Masters + 5 Workers)
+- **Total RAM**: 13 GB (1.5 LB + 4 Masters + 7.5 Workers)
+- **Network**: VirtualBox Host-Only (192.168.56.0/24)
 
 ---
 
 ## 📋 Prerequisites
 
-### System Requirements
-- **OS**: WSL2 on Windows (Ubuntu 20.04+ recommended) or Linux
-- **RAM**: 16GB minimum (20GB+ recommended)
-- **CPU**: 8+ cores
-- **Disk**: 50GB free space
-- **Network**: VirtualBox Host-Only network adapter
-
 ### Required Software
-```bash
-# VirtualBox
-VirtualBox 6.1+ or 7.0+
 
-# Vagrant
-vagrant --version  # 2.3.0+
+Before starting, ensure you have the following installed:
 
-# Terraform
-terraform --version  # 1.0.0+
+#### 1. **Windows Subsystem for Linux (WSL2)**
+   - Windows 10/11 with WSL2 enabled
+   - Ubuntu 20.04+ recommended
+   
+   ```powershell
+   # Install WSL2 (PowerShell as Administrator)
+   wsl --install
+   ```
 
-# Ansible
-ansible --version  # 2.9.0+
+#### 2. **VirtualBox** (Windows)
+   - Version 6.1+ or 7.0+
+   - Download from: https://www.virtualbox.org/wiki/Downloads
+   - ⚠️ **Important**: Install on Windows, NOT in WSL
 
-# kubectl (optional, for local management)
-kubectl version --client
-```
+#### 3. **Git** (WSL)
+   ```bash
+   # Install in WSL
+   sudo apt update
+   sudo apt install -y git
+   ```
+
+### System Requirements
+
+| Component | Minimum | Recommended |
+|-----------|---------|-------------|
+| **RAM** | 16 GB | 20+ GB |
+| **CPU** | 8 cores | 12+ cores |
+| **Disk** | 50 GB free | 100+ GB free |
+| **OS** | Windows 10/11 | Windows 11 |
+| **WSL** | WSL2 | WSL2 Ubuntu 22.04 |
+
+### Network Requirements
+
+- VirtualBox Host-Only network adapter configured
+- No firewall blocking ports 30000-32767
+- Internet access for downloading container images
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Quick Start
 
-### 1. Initial Setup (WSL Only)
+### Installation Steps
 
-If running on WSL, configure the environment first:
+Follow these steps to get your cluster up and running:
+
+#### **Step 1: Clone the Repository**
 
 ```bash
-# Setup WSL environment for Vagrant
-./setup-wsl.sh
+git clone https://github.com/aatirFound42/Terraform-Ansible-wsl.git
+cd Terraform-Ansible-wsl
+```
 
-# Reload your shell
+#### **Step 2: Make Scripts Executable**
+
+```bash
+chmod +x setup-wsl.sh
+chmod +x run-terraform.sh
+chmod +x run-ansible-k8s.sh
+```
+
+#### **Step 3: Setup WSL Environment**
+
+This configures Terraform, Vagrant, Ansible, and VirtualBox integration:
+
+```bash
+./setup-wsl.sh
+```
+
+**Expected output:**
+```
+================================================
+Setup Complete!
+================================================
+
+Next Steps:
+  1. Run: source ~/.bashrc
+     Or restart your WSL terminal
+```
+
+**Apply the changes:**
+```bash
 source ~/.bashrc
 ```
 
-### 2. Infrastructure Deployment
-
-Use `run-terraform.sh` to manage the VM infrastructure:
+#### **Step 4: Initialize Terraform**
 
 ```bash
-# Initialize Terraform (first time only)
 ./run-terraform.sh init
+```
 
-# Preview infrastructure changes
-./run-terraform.sh plan
+**Expected output:**
+```
+✓ Terraform initialized
+```
 
-# Create all 9 VMs
+#### **Step 5: Create Infrastructure**
+
+This creates all 9 VMs (takes ~10-15 minutes):
+
+```bash
 ./run-terraform.sh apply
+```
 
-# Check cluster status
+**Expected output:**
+```
+================================================
+VMs Created Successfully!
+================================================
+
+✓ All nodes accessible! (2 masters, 6 workers)
+```
+
+#### **Step 6: Verify Infrastructure (Optional)**
+
+```bash
 ./run-terraform.sh status
-
-# SSH into a specific node
-./run-terraform.sh ssh 0  # Master node-0
-./run-terraform.sh ssh 2  # Worker node-2
 ```
 
-**Infrastructure Creation Time:** ~10-15 minutes
+This shows VM status and SSH connectivity.
 
-### 3. Kubernetes Cluster Deployment
-
-Use `run-ansible-k8s.sh` to deploy Kubernetes and applications:
+#### **Step 7: Test Ansible Connectivity (Optional)**
 
 ```bash
-# Full deployment (all components)
+./run-ansible-k8s.sh ping
+```
+
+**Expected output:**
+```
+✓ All nodes responding
+```
+
+#### **Step 8: Deploy Kubernetes Cluster**
+
+This deploys the entire HA cluster with all applications (~15-20 minutes):
+
+```bash
 ./run-ansible-k8s.sh deploy
-
-# OR deploy in phases for better control
-./run-ansible-k8s.sh phase1  # LB + Primary Master + CNI
-./run-ansible-k8s.sh phase2  # Join Secondary Master
-./run-ansible-k8s.sh phase3  # Join Worker Nodes
-./run-ansible-k8s.sh phase4  # Deploy Applications
 ```
 
-**Deployment Time:** ~15-20 minutes
-
-### 4. Verify Deployment
+**⚠️ Important Notes:**
+- If the deployment gets stuck for 5-10 minutes on any task, press `Ctrl+C`
+- Then re-run the deploy command - Ansible is idempotent and will continue from where it stopped
+- Common sticking points: pulling container images (depends on internet speed)
 
 ```bash
-# Check cluster nodes
-./run-ansible-k8s.sh nodes
+# If stuck, stop and retry:
+# Press Ctrl+C
+./run-ansible-k8s.sh deploy
+```
 
-# Check all pods
-./run-ansible-k8s.sh pods
+#### **Step 9: Verify Cluster Health (Optional)**
 
-# Check services
-./run-ansible-k8s.sh services
-
-# View all service URLs
-./run-ansible-k8s.sh urls
-
-# Health check
+```bash
 ./run-ansible-k8s.sh health
 ```
 
----
-
-## 🎯 run-terraform.sh - Infrastructure Management
-
-Manages the VM infrastructure using Terraform and Vagrant.
-
-### Commands
-
-| Command | Description | Usage |
-|---------|-------------|-------|
-| `init` | Initialize Terraform workspace | `./run-terraform.sh init` |
-| `plan` | Preview infrastructure changes | `./run-terraform.sh plan` |
-| `apply` | Create all VMs | `./run-terraform.sh apply` |
-| `destroy` | Destroy all VMs | `./run-terraform.sh destroy` |
-| `status` | Show VM status and connectivity | `./run-terraform.sh status` |
-| `ssh N` | SSH into VM N (0-8) | `./run-terraform.sh ssh 0` |
-| `info` | Display cluster information | `./run-terraform.sh info` |
-| `clean` | Clean all Terraform/Vagrant files | `./run-terraform.sh clean` |
-
-### VM Mapping
-
-| VM Number | Hostname | IP Address | Role | Resources |
-|-----------|----------|------------|------|-----------|
-| N/A | lb-0 | 192.168.56.9 | Load Balancer | 1 CPU, 512MB |
-| 0 | node-0 | 192.168.56.10 | Primary Master | 2 CPU, 2GB |
-| 1 | node-1 | 192.168.56.11 | Secondary Master | 2 CPU, 2GB |
-| 2-7 | node-2 to node-7 | 192.168.56.12-17 | Workers | 2 CPU, 1.5GB |
-
-### Examples
-
-```bash
-# Create infrastructure
-./run-terraform.sh apply
-
-# Check if all VMs are accessible
-./run-terraform.sh status
-
-# SSH to primary master
-./run-terraform.sh ssh 0
-
-# SSH to first worker
-./run-terraform.sh ssh 2
-
-# Completely remove infrastructure
-./run-terraform.sh destroy
+**Expected output:**
+```
+✓ HAProxy accessible
+✓ All masters ready
+✓ All workers ready
+✓ All pods running
 ```
 
----
-
-## 🔧 run-ansible-k8s.sh - Kubernetes & Application Management
-
-Manages Kubernetes cluster deployment, configuration, and applications.
-
-### Deployment Commands
-
-#### Full Deployment
-```bash
-# Deploy everything (LB + K8s + Apps)
-./run-ansible-k8s.sh deploy
-
-# Deploy only cluster (skip apps)
-./run-ansible-k8s.sh deploy-cluster
-```
-
-#### Phased Deployment
-```bash
-# Phase 1: Load Balancer + Primary Master + CNI
-./run-ansible-k8s.sh phase1
-
-# Phase 2: Join Secondary Master
-./run-ansible-k8s.sh phase2
-
-# Phase 3: Join all Worker Nodes
-./run-ansible-k8s.sh phase3
-
-# Phase 4: Deploy Applications
-./run-ansible-k8s.sh phase4
-```
-
-#### Granular Deployment
-```bash
-# Individual components
-./run-ansible-k8s.sh deploy-lb          # Load balancer only
-./run-ansible-k8s.sh deploy-primary     # Primary master only
-./run-ansible-k8s.sh deploy-secondary   # Secondary masters
-./run-ansible-k8s.sh deploy-workers     # Worker nodes
-./run-ansible-k8s.sh deploy-apps        # Applications only
-```
-
-### Application Management
-
-#### Frontend/Backend Operations
-```bash
-# Deploy/Update
-./run-ansible-k8s.sh deploy-frontend    # Frontend only
-./run-ansible-k8s.sh deploy-backend     # Backend only
-./run-ansible-k8s.sh deploy-fullstack   # Both frontend & backend
-
-# Scale
-./run-ansible-k8s.sh scale-frontend 3   # Scale to 3 replicas
-./run-ansible-k8s.sh scale-backend 5    # Scale to 5 replicas
-
-# Restart
-./run-ansible-k8s.sh restart-frontend
-./run-ansible-k8s.sh restart-backend
-
-# Logs
-./run-ansible-k8s.sh logs-frontend
-./run-ansible-k8s.sh logs-backend
-
-# Status
-./run-ansible-k8s.sh status-fullstack
-```
-
-#### Monitoring Stack
-```bash
-# Deploy/Restart individual components
-./run-ansible-k8s.sh deploy-grafana
-./run-ansible-k8s.sh restart-prometheus
-./run-ansible-k8s.sh restart-grafana
-```
-
-#### Selenium Grid
-```bash
-# Scale Selenium nodes
-./run-ansible-k8s.sh scale-selenium 5
-
-# Restart Selenium
-./run-ansible-k8s.sh restart-selenium
-
-# Run manual test
-./run-ansible-k8s.sh selenium-test
-
-# View test metrics
-./run-ansible-k8s.sh selenium-metrics
-```
-
-### Cluster Operations
-
-#### Status & Monitoring
-```bash
-./run-ansible-k8s.sh nodes          # Show cluster nodes
-./run-ansible-k8s.sh pods           # Show pods
-./run-ansible-k8s.sh services       # Show services
-./run-ansible-k8s.sh deployments    # Show deployments
-./run-ansible-k8s.sh health         # Health check
-./run-ansible-k8s.sh status         # Full status
-./run-ansible-k8s.sh urls           # All service URLs
-./run-ansible-k8s.sh metrics        # Resource usage
-```
-
-#### Load Balancer Management
-```bash
-./run-ansible-k8s.sh lb-status      # HAProxy status
-./run-ansible-k8s.sh lb-stats       # Statistics URL
-./run-ansible-k8s.sh lb-config      # View configuration
-./run-ansible-k8s.sh lb-restart     # Restart HAProxy
-```
-
-#### Kubectl Commands
-```bash
-# Run any kubectl command on primary master
-./run-ansible-k8s.sh kubectl get pods -A
-./run-ansible-k8s.sh kubectl describe pod <pod-name> -n monitoring
-
-# Built-in commands
-./run-ansible-k8s.sh describe-pod <pod-name>
-./run-ansible-k8s.sh logs-pod <pod-name>
-```
-
-#### Troubleshooting
-```bash
-./run-ansible-k8s.sh debug-cluster     # Full cluster diagnostic
-./run-ansible-k8s.sh debug-apiserver   # API server issues
-./run-ansible-k8s.sh logs-node node-0  # Node kubelet logs
-./run-ansible-k8s.sh logs-lb           # HAProxy logs
-./run-ansible-k8s.sh top-nodes         # Node resource usage
-./run-ansible-k8s.sh top-pods          # Pod resource usage
-```
-
-#### Node Maintenance
-```bash
-./run-ansible-k8s.sh drain node-2      # Drain node for maintenance
-./run-ansible-k8s.sh uncordon node-2   # Mark node schedulable
-```
-
-#### HA Testing
-```bash
-./run-ansible-k8s.sh ha-test           # Test HA failover
-```
-
----
-
-## 📊 Accessing Services
-
-### After Successful Deployment
-
-All services are accessible via NodePort on any master or worker node IP (192.168.56.10-17):
+#### **Step 10: Get Service URLs**
 
 ```bash
-# Get all URLs
 ./run-ansible-k8s.sh urls
 ```
 
-### Service URLs (Default)
-
-**Applications:**
-- Frontend: http://192.168.56.10:30300
-- Backend: http://192.168.56.10:30500
-- Backend Health: http://192.168.56.10:30500/api/health
-
-**Monitoring:**
-- Prometheus: http://192.168.56.10:30090
-- Grafana: http://192.168.56.10:30030 (admin/admin)
-- Pushgateway: http://192.168.56.10:30091
-
-**Testing:**
-- Selenium Hub: http://192.168.56.10:30444
-
-**Infrastructure:**
-- HAProxy Stats: http://192.168.56.9:8404 (admin/admin123)
-- Kubernetes API: https://192.168.56.9:6443
-
----
-
-## 🔄 CI/CD Pipeline Workflow
-
-### Automated Testing Pipeline
-
-The cluster includes an automated Selenium testing pipeline that runs every 2 minutes:
-
-1. **Selenium CronJob** triggers every 2 minutes
-2. **Chrome nodes** execute browser tests against frontend/backend
-3. **Test results** pushed to Pushgateway
-4. **Prometheus** scrapes metrics from Pushgateway
-5. **Grafana** visualizes test results and trends
-
-### Manual Pipeline Trigger
-
-```bash
-# Trigger manual test
-./run-ansible-k8s.sh selenium-test
-
-# View test results
-./run-ansible-k8s.sh selenium-metrics
-
-# Check test job logs
-./run-ansible-k8s.sh kubectl logs -l job-name=selenium-test-manual-* -n monitoring
+**Expected output:**
+```
+🔧 Infrastructure:
+   HAProxy Stats: http://192.168.56.12:8404
+   
+📦 Application:
+   Frontend:      http://192.168.56.10:30300
+   Backend:       http://192.168.56.10:30500
+   
+📊 Monitoring:
+   Prometheus:    http://192.168.56.10:30090
+   Grafana:       http://192.168.56.10:30030
+   
+🧪 Testing:
+   Selenium Hub:  http://192.168.56.10:30444
 ```
 
-### Monitoring the Pipeline
+### 🎉 Deployment Complete!
 
-**Prometheus Metrics:**
-- `selenium_success` - Test pass/fail (1/0)
-- `selenium_latency_seconds` - Page load time
-
-**View in Prometheus:**
-```bash
-# Open Prometheus
-curl http://192.168.56.10:30090
-
-# Query: selenium_success{instance="http://cicd-backend:5000"}
-# Query: selenium_latency_seconds
-```
-
-**Grafana Dashboards:**
-1. Access Grafana: http://192.168.56.10:30030
-2. Login: admin/admin
-3. Create dashboard with Prometheus data source
-4. Add panels for:
-   - Test success rate over time
-   - Average latency trends
-   - Backend/Frontend availability
-
----
-
-## 🛠️ Common Workflows
-
-### Development Workflow
-
-```bash
-# 1. Update application code and build new image
-# 2. Push to container registry
-
-# 3. Deploy updated backend
-./run-ansible-k8s.sh deploy-backend
-
-# 4. Deploy updated frontend
-./run-ansible-k8s.sh deploy-frontend
-
-# 5. Check deployment status
-./run-ansible-k8s.sh status-fullstack
-
-# 6. View logs if issues
-./run-ansible-k8s.sh logs-backend
-./run-ansible-k8s.sh logs-frontend
-```
-
-### Scaling Workflow
-
-```bash
-# Scale for increased load
-./run-ansible-k8s.sh scale-backend 5
-./run-ansible-k8s.sh scale-frontend 3
-./run-ansible-k8s.sh scale-selenium 10
-
-# Monitor resource usage
-./run-ansible-k8s.sh metrics
-
-# Check pod distribution
-./run-ansible-k8s.sh pods
-```
-
-### Troubleshooting Workflow
-
-```bash
-# 1. Check overall health
-./run-ansible-k8s.sh health
-
-# 2. Identify failing components
-./run-ansible-k8s.sh pods
-
-# 3. Describe problematic pod
-./run-ansible-k8s.sh describe-pod <pod-name>
-
-# 4. Check logs
-./run-ansible-k8s.sh logs-pod <pod-name>
-
-# 5. Full cluster diagnostic
-./run-ansible-k8s.sh debug-cluster
-```
-
-### Maintenance Workflow
-
-```bash
-# 1. Drain node for maintenance
-./run-ansible-k8s.sh drain node-2
-
-# 2. Verify pods moved
-./run-ansible-k8s.sh pods
-
-# 3. Perform maintenance (SSH to node)
-./run-terraform.sh ssh 2
-
-# 4. Mark node schedulable again
-./run-ansible-k8s.sh uncordon node-2
-```
+Your HA Kubernetes cluster is now running. Open the URLs in your browser to access the services.
 
 ---
 
 ## 📁 Project Structure
 
 ```
-.
-├── run-terraform.sh              # Infrastructure management script
-├── run-ansible-k8s.sh           # Kubernetes & app management script
-├── setup-wsl.sh                 # WSL environment setup
+Terraform-Ansible-wsl/
 │
-├── terraform/                   # Infrastructure as Code
-│   ├── main.tf                  # VM definitions
-│   ├── variables.tf             # Configuration variables
-│   └── outputs.tf               # Output values
+├── README.md                      # This file
+├── LICENSE                        # MIT License
 │
-├── ansible/                     # Configuration Management
-│   ├── playbook-k8s.yml        # Main Kubernetes playbook
-│   ├── inventory.ini            # Auto-generated from Terraform
+├── setup-wsl.sh                   # WSL environment setup script
+├── run-terraform.sh               # Infrastructure management script
+├── run-ansible-k8s.sh             # Kubernetes deployment & management script
+│
+├── terraform/                     # Infrastructure as Code
+│   ├── main.tf                    # VM definitions (9 VMs)
+│   ├── variables.tf               # Configuration variables
+│   ├── outputs.tf                 # Output values (IPs, etc.)
+│   └── Vagrantfile                # Vagrant VM configuration
+│
+├── ansible/                       # Configuration Management
+│   ├── playbook-k8s.yml           # Main Kubernetes deployment playbook
+│   ├── inventory.ini              # Auto-generated from Terraform
 │   │
-│   └── files/k8s/              # Kubernetes manifests
-│       ├── namespace.yml
-│       ├── backend-deployment.yml
-│       ├── frontend-deployment.yml
-│       ├── prometheus-deployment.yml
-│       ├── grafana-deployment.yml
-│       ├── selenium-hub-deployment.yml
-│       ├── selenium-chrome-deployment.yml
-│       ├── selenium-test-cronjob.yml
-│       ├── pushgateway-deployment.yml
-│       └── node-exporter-daemonset.yml
+│   └── files/                     # Static files
+│       └── k8s/                   # Kubernetes manifests
+│           ├── namespace.yml
+│           ├── backend-deployment.yml
+│           ├── frontend-deployment.yml
+│           ├── prometheus-deployment.yml
+│           ├── grafana-deployment.yml
+│           ├── selenium-hub-deployment.yml
+│           ├── selenium-chrome-deployment.yml
+│           ├── selenium-test-cronjob.yml
+│           ├── pushgateway-deployment.yml
+│           └── node-exporter-daemonset.yml
 │
-└── README.md                    # This file
+└── .gitignore                     # Git ignore file
 ```
 
 ---
 
-## 🔒 Security Notes
+## 🌐 Accessing Services
 
-### Default Credentials (Change in Production!)
+After deployment, all services are accessible via NodePort on any master or worker node IP.
 
-- **Grafana**: admin/admin
-- **HAProxy Stats**: admin/admin123
-- **Vagrant SSH**: vagrant/vagrant
-- **Kubernetes**: Certificates in `/etc/kubernetes/`
+### Service URLs
 
-### Network Security
+Replace `192.168.56.10` with any master (10-11) or worker (12-17) node IP:
 
-- All services use NodePort (30000-32767 range)
-- Internal cluster network: 10.244.0.0/16 (Calico)
-- Service network: 10.96.0.0/12
-- Host network: 192.168.56.0/24
+#### **Infrastructure**
+```
+HAProxy Stats:     http://192.168.56.12:8404
+  Username: admin
+  Password: admin123
 
-### Best Practices for Production
+Kubernetes API:    https://192.168.56.12:6443
+  (via Load Balancer)
+```
 
-1. Change all default passwords
-2. Enable RBAC and configure proper roles
-3. Use Ingress with TLS instead of NodePort
-4. Implement Network Policies
-5. Enable Pod Security Standards
-6. Use secrets management (Sealed Secrets, Vault)
-7. Regular backups of etcd
+#### **Applications**
+```
+Frontend:          http://192.168.56.10:30300
+Backend:           http://192.168.56.10:30500
+Backend Health:    http://192.168.56.10:30500/api/health
+```
+
+#### **Monitoring**
+```
+Prometheus:        http://192.168.56.10:30090
+Grafana:           http://192.168.56.10:30030
+  Username: admin
+  Password: admin
+
+Pushgateway:       http://192.168.56.10:30091
+```
+
+#### **Testing**
+```
+Selenium Hub:      http://192.168.56.10:30444
+```
+
+### Quick Access Commands
+
+```bash
+# Get all service URLs
+./run-ansible-k8s.sh urls
+
+# Check service health
+./run-ansible-k8s.sh health
+
+# View cluster status
+./run-ansible-k8s.sh status
+```
 
 ---
 
-## 🐛 Troubleshooting Guide
+## 🛠️ Management Commands
 
-### VMs Not Starting
+### Infrastructure Management (`run-terraform.sh`)
+
+#### Basic Commands
 
 ```bash
-# Check Vagrant status
-cd terraform
-vagrant global-status
+# Initialize Terraform
+./run-terraform.sh init
 
-# Check VirtualBox VMs
+# Create all VMs
+./run-terraform.sh apply
+
+# Destroy all VMs
+./run-terraform.sh destroy
+
+# Show VM status
+./run-terraform.sh status
+
+# List all nodes
+./run-terraform.sh list
+
+# Show cluster info
+./run-terraform.sh info
+
+# Clean all files
+./run-terraform.sh clean
+```
+
+#### SSH Access
+
+```bash
+# SSH to master-1 (node-0)
+./run-terraform.sh ssh 0
+
+# SSH to master-2 (node-1)
+./run-terraform.sh ssh 1
+
+# SSH to worker-1 (node-2)
+./run-terraform.sh ssh 2
+
+# SSH to worker-6 (node-7)
+./run-terraform.sh ssh 7
+```
+
+#### Node Management
+
+```bash
+# Destroy specific node
+./run-terraform.sh destroy-node 3
+
+# Destroy multiple nodes
+./run-terraform.sh destroy-nodes 2 3 4
+
+# Destroy all masters
+./run-terraform.sh destroy-masters
+
+# Destroy all workers
+./run-terraform.sh destroy-workers
+
+# Restart a node
+./run-terraform.sh restart-node 0
+```
+
+#### VM State Control
+
+```bash
+# Suspend (save state)
+./run-terraform.sh suspend 2          # Suspend worker-1
+./run-terraform.sh suspend-all        # Suspend all nodes
+./run-terraform.sh suspend-workers    # Suspend all workers
+
+# Resume
+./run-terraform.sh resume 2           # Resume worker-1
+./run-terraform.sh resume-all         # Resume all nodes
+
+# Halt (power off)
+./run-terraform.sh halt 3             # Halt worker-2
+./run-terraform.sh halt-workers       # Halt all workers
+
+# Start
+./run-terraform.sh up 3               # Start worker-2
+./run-terraform.sh up-all             # Start all nodes
+
+# Reload (restart)
+./run-terraform.sh reload 0           # Reload master-1
+```
+
+### Kubernetes Management (`run-ansible-k8s.sh`)
+
+#### Deployment Commands
+
+```bash
+# Full deployment (all phases)
+./run-ansible-k8s.sh deploy
+
+# Phased deployment
+./run-ansible-k8s.sh phase1           # LB + Primary Master + CNI
+./run-ansible-k8s.sh phase2           # Join Secondary Masters
+./run-ansible-k8s.sh phase3           # Join Worker Nodes
+./run-ansible-k8s.sh phase4           # Deploy Applications
+
+# Granular deployment
+./run-ansible-k8s.sh deploy-lb        # Load balancer only
+./run-ansible-k8s.sh deploy-primary   # Primary master only
+./run-ansible-k8s.sh deploy-apps      # Applications only
+```
+
+#### Application Management
+
+```bash
+# Frontend/Backend
+./run-ansible-k8s.sh deploy-frontend      # Deploy frontend
+./run-ansible-k8s.sh deploy-backend       # Deploy backend
+./run-ansible-k8s.sh deploy-fullstack     # Deploy both
+
+./run-ansible-k8s.sh scale-frontend 3     # Scale to 3 replicas
+./run-ansible-k8s.sh scale-backend 5      # Scale to 5 replicas
+
+./run-ansible-k8s.sh restart-frontend     # Restart frontend
+./run-ansible-k8s.sh restart-backend      # Restart backend
+
+./run-ansible-k8s.sh logs-frontend        # View frontend logs
+./run-ansible-k8s.sh logs-backend         # View backend logs
+
+./run-ansible-k8s.sh status-fullstack     # Check status
+```
+
+#### Monitoring Stack
+
+```bash
+# Deploy/Restart
+./run-ansible-k8s.sh deploy-grafana       # Deploy Grafana
+./run-ansible-k8s.sh restart-prometheus   # Restart Prometheus
+./run-ansible-k8s.sh restart-grafana      # Restart Grafana
+```
+
+#### Cluster Operations
+
+```bash
+# Status & Health
+./run-ansible-k8s.sh nodes                # Show nodes
+./run-ansible-k8s.sh pods                 # Show pods
+./run-ansible-k8s.sh services             # Show services
+./run-ansible-k8s.sh health               # Health check
+./run-ansible-k8s.sh status               # Full status
+./run-ansible-k8s.sh urls                 # Service URLs
+
+# Kubectl commands
+./run-ansible-k8s.sh kubectl get pods -A
+./run-ansible-k8s.sh kubectl describe pod <pod-name> -n monitoring
+
+# Load Balancer
+./run-ansible-k8s.sh lb-status            # HAProxy status
+./run-ansible-k8s.sh lb-stats             # Statistics URL
+./run-ansible-k8s.sh lb-restart           # Restart HAProxy
+
+# Testing
+./run-ansible-k8s.sh selenium-test        # Run manual test
+./run-ansible-k8s.sh selenium-metrics     # View metrics
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### ⚠️ Most Common Issue: VirtualBox /dev/null Error
+
+If you see this error when running `./run-terraform.sh apply`:
+
+```
+VBoxManage.exe: error: RawFile#0 failed to create the raw output file /dev/null (VERR_PATH_NOT_FOUND)
+```
+
+**Quick Fix (Run these commands):**
+
+```bash
+# Method 1: Use the fix script
+chmod +x fix-vbox-devnull.sh
+./fix-vbox-devnull.sh
+source ~/.bashrc
+
+# Method 2: Manual fix
+echo 'export VBOX_MSI_INSTALL_PATH="/mnt/c/Program Files/Oracle/VirtualBox"' >> ~/.bashrc
+source ~/.bashrc
+
+# Then clean up and retry
+./run-terraform.sh destroy
+./run-terraform.sh apply
+```
+
+**Why this happens:**
+VirtualBox on Windows tries to use the Linux path `/dev/null` when called from WSL. The `VBOX_MSI_INSTALL_PATH` environment variable tells it to use the Windows equivalent (`NUL`).
+
+---
+
+### Common Issues
+
+#### **Issue 1: VirtualBox /dev/null error**
+
+**Symptoms:**
+- Error: `RawFile#0 failed to create the raw output file /dev/null (VERR_PATH_NOT_FOUND)`
+- Error code: `E_FAIL (0x80004005)`
+- All VMs fail to start
+
+**Root Cause:**
+VirtualBox on Windows tries to use Linux path `/dev/null` when called from WSL.
+
+**Solution:**
+```bash
+# Add environment variable to ~/.bashrc
+echo 'export VBOX_MSI_INSTALL_PATH="/mnt/c/Program Files/Oracle/VirtualBox"' >> ~/.bashrc
+source ~/.bashrc
+
+# OR re-run setup script (recommended)
+./setup-wsl.sh
+source ~/.bashrc
+
+# Then retry
+./run-terraform.sh destroy  # Clean up failed attempts
+./run-terraform.sh apply
+```
+
+**Prevention:**
+This is already included in the latest `setup-wsl.sh` script. Make sure you've run it.
+
+#### **Issue 2: VMs not starting**
+
+**Symptoms:**
+- `vagrant up` fails
+- VMs show as "not created"
+
+**Solution:**
+```bash
+# Check VirtualBox
 VBoxManage list vms
-VBoxManage list runningvms
 
-# Restart a specific VM
-vagrant up node-0 --provision
+# Restart VirtualBox service (Windows)
+# Run in PowerShell as Administrator:
+Get-Service -Name "VBoxSDS" | Restart-Service
+
+# In WSL, retry
+./run-terraform.sh apply
 ```
 
-### SSH Connection Issues
+#### **Issue 2: Ansible cannot connect to VMs**
 
+**Symptoms:**
+- `./run-ansible-k8s.sh ping` fails
+- SSH connection timeout
+
+**Solution:**
 ```bash
-# Verify SSH key permissions
-ls -la ~/.vagrant.d/insecure_private_key
-chmod 600 ~/.vagrant.d/insecure_private_key
-
-# Clear known hosts
-ssh-keygen -R 192.168.56.10
+# Check VM status
+./run-terraform.sh status
 
 # Test manual SSH
-ssh -i ~/.vagrant.d/insecure_private_key vagrant@192.168.56.10
+./run-terraform.sh ssh 0
+
+# Fix SSH keys
+rm -f ~/.ssh/known_hosts
+./run-terraform.sh apply  # Re-apply to fix keys
 ```
 
-### Ansible Connectivity Issues
+#### **Issue 3: Deployment stuck on image pulling**
 
+**Symptoms:**
+- Deployment hangs on "Pulling image..."
+- Takes more than 10 minutes
+
+**Solution:**
 ```bash
-# Test Ansible ping
-cd ansible
-ansible all -m ping
+# Stop deployment
+# Press Ctrl+C
 
-# Test specific host
-ansible node-0 -m ping -vvv
+# Retry (Ansible will continue)
+./run-ansible-k8s.sh deploy
+
+# Or deploy in phases
+./run-ansible-k8s.sh phase1
+./run-ansible-k8s.sh phase2
+./run-ansible-k8s.sh phase3
+./run-ansible-k8s.sh phase4
 ```
 
-### Kubernetes Issues
+#### **Issue 4: Pods not starting**
 
+**Symptoms:**
+- Pods stuck in `Pending` or `ImagePullBackOff`
+
+**Solution:**
 ```bash
-# Check control plane pods
-./run-ansible-k8s.sh kubectl get pods -n kube-system
+# Check pod status
+./run-ansible-k8s.sh kubectl get pods -n monitoring
 
-# Check node status
+# Describe problematic pod
+./run-ansible-k8s.sh describe-pod <pod-name>
+
+# Check node resources
 ./run-ansible-k8s.sh kubectl get nodes -o wide
-
-# Full diagnostic
-./run-ansible-k8s.sh debug-cluster
-```
-
-### Application Not Accessible
-
-```bash
-# Check if pods are running
-./run-ansible-k8s.sh pods
-
-# Check services
-./run-ansible-k8s.sh services
-
-# Check pod logs
-./run-ansible-k8s.sh logs-backend
-./run-ansible-k8s.sh logs-frontend
 
 # Restart deployment
 ./run-ansible-k8s.sh restart-backend
 ```
 
-### Prometheus Frontend Down
+#### **Issue 5: HAProxy not accessible**
 
-If Prometheus shows `cicd-frontend` as down with "unsupported Content-Type":
+**Symptoms:**
+- Cannot access http://192.168.56.9:8404
+- API server not responding
 
+**Solution:**
 ```bash
-# This is expected - frontend doesn't expose metrics
-# Edit Prometheus config to remove frontend scraping
-./run-ansible-k8s.sh kubectl edit configmap prometheus-config -n monitoring
+# Check HAProxy status
+./run-ansible-k8s.sh lb-status
 
-# Remove the cicd-frontend scrape job
-# Then restart Prometheus
-./run-ansible-k8s.sh restart-prometheus
+# View HAProxy logs
+./run-ansible-k8s.sh logs-lb
+
+# Restart HAProxy
+./run-ansible-k8s.sh lb-restart
+
+# Re-deploy load balancer
+./run-ansible-k8s.sh deploy-lb
 ```
 
----
-
-## 📈 Monitoring & Observability
-
-### Prometheus Metrics
-
-**Available Metrics:**
-- `up` - Service availability
-- `selenium_success` - Test results
-- `selenium_latency_seconds` - Response times
-- `node_*` - System metrics (CPU, memory, disk, network)
-- `kubelet_*` - Kubernetes metrics
-- `container_*` - Container metrics
-
-### Sample Prometheus Queries
-
-```promql
-# Backend uptime percentage (last 24h)
-avg_over_time(up{job="cicd-backend"}[24h]) * 100
-
-# Average response time (last hour)
-avg_over_time(selenium_latency_seconds[1h])
-
-# Test success rate
-sum(selenium_success) / count(selenium_success) * 100
-
-# Node CPU usage
-100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)
-```
-
-### Grafana Dashboard Setup
-
-1. Access Grafana: http://192.168.56.10:30030
-2. Login: admin/admin
-3. Add Prometheus data source (already configured)
-4. Import or create dashboards for:
-   - Cluster overview
-   - Application performance
-   - Test results
-   - Node metrics
-
----
-
-## 🔄 Cleanup & Reset
-
-### Partial Cleanup
+### Debugging Commands
 
 ```bash
-# Delete only applications
-./run-ansible-k8s.sh delete-frontend
-./run-ansible-k8s.sh delete-backend
+# Full cluster diagnostic
+./run-ansible-k8s.sh debug-cluster
 
-# Redeploy specific components
-./run-ansible-k8s.sh phase4
+# Debug API server
+./run-ansible-k8s.sh debug-apiserver
+
+# Node logs
+./run-ansible-k8s.sh logs-node node-0
+
+# Resource usage
+./run-ansible-k8s.sh top-nodes
+./run-ansible-k8s.sh top-pods
 ```
 
-### Full Cleanup
+### Reset and Clean
 
 ```bash
-# Destroy all infrastructure
+# Destroy and recreate everything
 ./run-terraform.sh destroy
-
-# Clean all files
-./run-terraform.sh clean
-
-# Remove Vagrant boxes (optional)
-vagrant box list
-vagrant box remove ubuntu/focal64
-```
-
-### Fresh Deployment
-
-```bash
-# Complete reset and redeploy
 ./run-terraform.sh clean
 ./run-terraform.sh apply
 ./run-ansible-k8s.sh deploy
+
+# Reset specific node
+./run-terraform.sh restart-node 0
+```
+
+---
+
+## 🔧 Advanced Usage
+
+### CI/CD Pipeline
+
+The cluster includes an automated Selenium testing pipeline:
+
+```bash
+# View pipeline status
+./run-ansible-k8s.sh test-selenium
+
+# Trigger manual test
+./run-ansible-k8s.sh selenium-test
+
+# View test metrics
+./run-ansible-k8s.sh selenium-metrics
+
+# Check CronJob
+./run-ansible-k8s.sh kubectl get cronjobs -n monitoring
+```
+
+**Pipeline Flow:**
+1. CronJob triggers every 2 minutes
+2. Selenium tests run against frontend/backend
+3. Results pushed to Pushgateway
+4. Prometheus scrapes metrics
+5. Grafana visualizes results
+
+### High Availability Testing
+
+```bash
+# Test HA failover
+./run-ansible-k8s.sh ha-test
+
+# Simulate master failure
+./run-terraform.sh halt 0  # Halt master-1
+
+# Verify cluster still works
+./run-ansible-k8s.sh kubectl get nodes
+
+# Restore master
+./run-terraform.sh up 0
+```
+
+### Scaling Operations
+
+```bash
+# Scale application components
+./run-ansible-k8s.sh scale-frontend 5
+./run-ansible-k8s.sh scale-backend 3
+./run-ansible-k8s.sh scale-selenium 10
+
+# Add/remove worker nodes
+./run-terraform.sh destroy-node 7    # Remove worker-6
+./run-terraform.sh restart-node 7    # Add back worker-6
+./run-ansible-k8s.sh deploy-workers  # Join to cluster
+```
+
+### Monitoring Setup
+
+```bash
+# Access Grafana
+# URL: http://192.168.56.10:30030
+# Login: admin/admin
+
+# Import Kubernetes dashboards
+# Dashboard ID: 315 (Kubernetes cluster monitoring)
+# Dashboard ID: 1860 (Node Exporter Full)
+
+# Query Prometheus
+# URL: http://192.168.56.10:30090
+# Sample query: up{job="cicd-backend"}
+```
+
+### Custom Deployments
+
+```bash
+# Deploy custom application
+./run-ansible-k8s.sh kubectl apply -f your-app.yaml
+
+# Create namespace
+./run-ansible-k8s.sh kubectl create namespace custom-app
+
+# Deploy to custom namespace
+./run-ansible-k8s.sh kubectl apply -f your-app.yaml -n custom-app
 ```
 
 ---
 
 ## 🤝 Contributing
 
-Contributions welcome! Please:
+Contributions are welcome! Please follow these steps:
 
 1. Fork the repository
-2. Create a feature branch
-3. Test your changes thoroughly
-4. Submit a pull request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+### Development Guidelines
+
+- Test all changes on a clean deployment
+- Update documentation for new features
+- Follow existing code style and structure
+- Add comments for complex logic
 
 ---
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
 ## 🙏 Acknowledgments
 
-- Kubernetes community
-- Calico Project
-- Prometheus & Grafana teams
-- Selenium Project
-- Ansible & Terraform communities
+- **Kubernetes Community** - For the amazing container orchestration platform
+- **Calico Project** - For robust pod networking
+- **Prometheus & Grafana** - For comprehensive monitoring solutions
+- **Selenium Project** - For browser automation testing
+- **HashiCorp** - For Terraform and Vagrant
+- **Ansible** - For powerful configuration management
 
 ---
 
-## 📞 Support
+## 📞 Support & Contact
 
-For issues and questions:
-- Create an issue on GitHub
-- Check troubleshooting guide above
-- Review Ansible/Terraform logs
+- **Issues**: [GitHub Issues](https://github.com/aatirFound42/Terraform-Ansible-wsl/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/aatirFound42/Terraform-Ansible-wsl/discussions)
+- **Author**: [@aatirFound42](https://github.com/aatirFound42)
+
+---
+
+## 📊 Project Stats
+
+- **VMs**: 9 (1 LB + 2 Masters + 6 Workers)
+- **Total Resources**: 14 vCPU, 13.5 GB RAM
+- **Services**: 8 (Frontend, Backend, Prometheus, Grafana, Selenium Hub, Chrome Nodes, Pushgateway, Node Exporter)
+- **Network**: 192.168.56.0/24 (VirtualBox Host-Only)
+- **Deployment Time**: ~25-35 minutes (Infrastructure + Kubernetes + Apps)
 
 ---
 
 **Happy Clustering! 🚀**
+
+*Built with ❤️ for the DevOps community*
